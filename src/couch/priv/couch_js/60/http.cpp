@@ -70,7 +70,7 @@ http_send(JSContext* cx, JSObject* req, JS::Value body)
 
 
 int
-http_status(JSContext* cx, JSObject* req)
+http_status(JSContext* cx, JSObject* req, JS::Value body)
 {
     return -1;
 }

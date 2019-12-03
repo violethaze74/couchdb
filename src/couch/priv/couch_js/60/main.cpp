@@ -322,9 +322,10 @@ seal(JSContext* cx, unsigned int argc, JS::Value* vp)
     JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
     JS::RootedObject target(cx);
     target = JS::ToObject(cx, args[0]);
-    if (!target)
+    if (!target) {
         args.rval().setUndefined();
         return true;
+    }
     bool deep = false;
     deep = args[1].toBoolean();
     bool ret = deep ? JS_DeepFreezeObject(cx, target) : JS_FreezeObject(cx, target);
