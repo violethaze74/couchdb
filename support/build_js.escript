@@ -19,28 +19,84 @@
 
 
 main([]) ->
-    JsFiles = ["share/server/json2.js",
-               "share/server/dreyfus.js",
-               "share/server/filter.js",
-               "share/server/mimeparse.js",
-               "share/server/render.js",
-               "share/server/state.js",
-               "share/server/util.js",
-               "share/server/validate.js",
-               "share/server/views.js",
-               "share/server/loop.js"],
 
-    CoffeeFiles = ["share/server/json2.js",
-                   "share/server/dreyfus.js",
-                   "share/server/filter.js",
-                   "share/server/mimeparse.js",
-                   "share/server/render.js",
-                   "share/server/state.js",
-                   "share/server/util.js",
-                   "share/server/validate.js",
-                   "share/server/views.js",
-                   "share/server/coffee-script.js",
-                   "share/server/loop.js"],
+    CouchConfig = case filelib:is_file(os:getenv("COUCHDB_CONFIG")) of
+        true ->
+            {ok, Result} = file:consult(os:getenv("COUCHDB_CONFIG")),
+            Result;
+        false ->
+            []
+    end,
+
+    SMVsn = case lists:keyfind(spidermonkey_version, 1, CouchConfig) of
+        {_, "1.8.5"} ->
+            "1.8.5";
+        {_, "60"} ->
+            "60";
+        undefined ->
+            "1.8.5";
+        {_, Unsupported} ->
+            io:format(standard_error, "Unsupported SpiderMonkey version: ~s~n", [Unsupported]),
+            erlang:halt(1)
+    end,
+
+    JsFiles = case SMVsn of
+        "1.8.5"  ->
+            ["share/server/json2.js",
+             "share/server/dreyfus.js",
+             "share/server/filter.js",
+             "share/server/mimeparse.js",
+             "share/server/render.js",
+             "share/server/state.js",
+             "share/server/util.js",
+             "share/server/validate.js",
+             "share/server/views.js",
+             "share/server/loop.js"];
+        "60" ->
+            ["share/server/json2.js",
+             "share/server/60/dreyfus.js",
+             "share/server/filter.js",
+             "share/server/mimeparse.js",
+             "share/server/render.js",
+             "share/server/state.js",
+             "share/server/60/util.js",
+             "share/server/validate.js",
+             "share/server/60/views.js",
+             "share/server/60/esprima.js",
+             "share/server/60/escodegen.js",
+             "share/server/60/rewrite_fun.js",
+             "share/server/loop.js"]
+    end,
+
+    CoffeeFiles = case SMVsn of
+        "1.8.5"  ->
+            ["share/server/json2.js",
+             "share/server/dreyfus.js",
+             "share/server/filter.js",
+             "share/server/mimeparse.js",
+             "share/server/render.js",
+             "share/server/state.js",
+             "share/server/util.js",
+             "share/server/validate.js",
+             "share/server/views.js",
+             "share/server/coffee-script.js",
+             "share/server/loop.js"];
+        "60" ->
+            ["share/server/json2.js",
+             "share/server/60/dreyfus.js",
+             "share/server/filter.js",
+             "share/server/mimeparse.js",
+             "share/server/render.js",
+             "share/server/state.js",
+             "share/server/60/util.js",
+             "share/server/validate.js",
+             "share/server/60/views.js",
+             "share/server/coffee-script.js",
+		     "share/server/60/esprima.js",
+             "share/server/60/escodegen.js",
+             "share/server/60/rewrite_fun.js",
+             "share/server/loop.js"]
+    end,
 
     Pre = "(function () {\n",
     Post = "})();\n",
