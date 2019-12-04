@@ -22,6 +22,23 @@
 #include "utf8.h"
 
 std::string
+js_to_string(JSContext* cx, JS::Value val)
+{
+    JS::RootedString sval(cx);
+    JS::HandleValue hval = JS::HandleValue::fromMarkedLocation(&val);
+    sval = val.toString();
+
+    JS::UniqueChars chars(JS_EncodeStringToUTF8(cx, sval));
+    if(!chars) {
+        JS_ClearPendingException(cx);
+        fprintf(stderr, "Error converting value to string.\n");
+        exit(3);
+    }
+
+    return chars.get();
+}
+
+std::string
 js_to_string(JSContext* cx, JS::HandleValue val)
 {
     JS::RootedString sval(cx);

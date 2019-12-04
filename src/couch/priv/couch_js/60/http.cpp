@@ -171,7 +171,6 @@ http_dtor(JSFreeOp* fop, JSObject* obj)
 {
     HTTPData* http = (HTTPData*) JS_GetPrivate(obj);
     if(http) {
-        if(http->url) free(http->url);
         if(http->req_headers) curl_slist_free_all(http->req_headers);
         free(http);
     }
@@ -196,7 +195,7 @@ http_open(JSContext* cx, JSObject* req, JS::Value mth, JS::Value url, JS::Value 
         goto done;
     }
 
-    method = enc_string(cx, mth, NULL);
+    method = (char *)js_to_string(cx, mth).c_str();
     if(!method) {
         JS_ReportErrorUTF8(cx, "Failed to encode method.");
         goto done;
@@ -205,7 +204,6 @@ http_open(JSContext* cx, JSObject* req, JS::Value mth, JS::Value url, JS::Value 
     for(methid = 0; METHODS[methid] != NULL; methid++) {
         if(strcasecmp(METHODS[methid], method) == 0) break;
     }
-
     if(methid > OPTIONS) {
         JS_ReportErrorUTF8(cx, "Invalid method specified.");
         goto done;
@@ -223,7 +221,7 @@ http_open(JSContext* cx, JSObject* req, JS::Value mth, JS::Value url, JS::Value 
         http->url = NULL;
     }
 
-    http->url = enc_string(cx, url, NULL);
+    http->url = (char *)js_to_string(cx, url).c_str();
     if(http->url == NULL) {
         JS_ReportErrorUTF8(cx, "Failed to encode URL.");
         goto done;
@@ -238,14 +236,12 @@ http_open(JSContext* cx, JSObject* req, JS::Value mth, JS::Value url, JS::Value 
         curl_slist_free_all(http->req_headers);
         http->req_headers = NULL;
     }
-
     // Disable Expect: 100-continue
     http->req_headers = curl_slist_append(http->req_headers, "Expect:");
 
     ret = true;
 
 done:
-    if(method) free(method);
     return ret;
 }
 
@@ -271,7 +267,7 @@ http_set_hdr(JSContext* cx, JSObject* req, JS::Value name, JS::Value val)
         goto done;
     }
 
-    keystr = enc_string(cx, name, NULL);
+    keystr = (char *)js_to_string(cx, name).c_str();
     if(!keystr)
     {
         JS_ReportErrorUTF8(cx, "Failed to encode header name.");
@@ -284,7 +280,7 @@ http_set_hdr(JSContext* cx, JSObject* req, JS::Value name, JS::Value val)
         goto done;
     }
 
-    valstr = enc_string(cx, val, NULL);
+    valstr = (char *)js_to_string(cx, val).c_str();
     if(!valstr)
     {
         JS_ReportErrorUTF8(cx, "Failed to encode header value.");
@@ -304,8 +300,6 @@ http_set_hdr(JSContext* cx, JSObject* req, JS::Value name, JS::Value val)
     ret = true;
 
 done:
-    if(keystr) free(keystr);
-    if(valstr) free(valstr);
     if(hdrbuf) free(hdrbuf);
     return ret;
 }
@@ -324,7 +318,7 @@ http_send(JSContext* cx, JSObject* req, JS::Value body)
     }
 
     if(!body.isUndefined()) {
-        bodystr = enc_string(cx, body, &bodylen);
+        bodystr = (char *)js_to_string(cx, body).c_str();
         if(!bodystr) {
             JS_ReportErrorUTF8(cx, "Failed to encode body.");
             goto done;
@@ -334,7 +328,6 @@ http_send(JSContext* cx, JSObject* req, JS::Value body)
     ret = go(cx, req, http, bodystr, bodylen);
 
 done:
-    if(bodystr) free(bodystr);
     return ret;
 }
 
@@ -463,13 +456,12 @@ go(JSContext* cx, JSObject* obj, HTTPData* http, char* body, size_t bodylen)
 
     tmp = JS_GetReservedSlot(obj, 0);
 
-    if(!(referer = enc_string(cx, tmp, NULL))) {
+    if(!(referer = (char *)js_to_string(cx, tmp).c_str())) {
         JS_ReportErrorUTF8(cx, "Failed to encode referer.");
         if(state.recvbuf) JS_free(cx, state.recvbuf);
           return ret;
     }
     curl_easy_setopt(HTTP_HANDLE, CURLOPT_REFERER, referer);
-    free(referer);
 
     if(http->method < 0 || http->method > OPTIONS) {
         JS_ReportErrorUTF8(cx, "INTERNAL: Unknown method.");
@@ -533,6 +525,7 @@ go(JSContext* cx, JSObject* obj, HTTPData* http, char* body, size_t bodylen)
     if(state.recvbuf) {
         state.recvbuf[state.read] = '\0';
         jsbody = dec_string(cx, state.recvbuf, state.read+1);
+        //jsbody = string_to_js(cx, std::string(state.recvbuf, state.read));
         if(!jsbody) {
             // If we can't decode the body as UTF-8 we forcefully
             // convert it to a string by just forcing each byte
@@ -563,7 +556,6 @@ go(JSContext* cx, JSObject* obj, HTTPData* http, char* body, size_t bodylen)
         if(state.recvbuf) JS_free(cx, state.recvbuf);
         return ret;
     }
-
     ret = true;
     if(state.recvbuf) JS_free(cx, state.recvbuf);
     return ret;
@@ -638,7 +630,8 @@ recv_header(void *ptr, size_t size, size_t nmem, void *data)
     }
 
     // Append the new header to our array.
-    hdr = dec_string(state->cx, header, length);
+
+    hdr = string_to_js(state->cx, std::string(header));
     if(!hdr) {
         return CURLE_WRITE_ERROR;
     }
