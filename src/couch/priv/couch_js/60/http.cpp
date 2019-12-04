@@ -41,10 +41,10 @@ http_ctor(JSContext* cx, JSObject* req)
 }
 
 
-bool
+void
 http_dtor(JSFreeOp* fop, JSObject* req)
 {
-    return false;
+    return;
 }
 
 
@@ -70,7 +70,7 @@ http_send(JSContext* cx, JSObject* req, JS::Value body)
 
 
 int
-http_status(JSContext* cx, JSObject* req, JS::Value body)
+http_status(JSContext* cx, JSObject* req)
 {
     return -1;
 }
