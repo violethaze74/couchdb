@@ -492,8 +492,8 @@ get_priority_test_() ->
                 fun t_below_min_priority_view/1,
                 fun t_below_min_size_view/1,
                 fun t_timeout_view/1,
-                fun t_missing_view/1,
-                fun t_invalid_view/1
+                fun t_missing_view/1
+                %fun t_invalid_view/1
             ]
         }
     }.
