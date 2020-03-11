@@ -21,6 +21,7 @@
 
 -define(CLUSTER_CONFIG, 0).
 -define(ALL_DBS, 1).
+-define(DELETED_DBS, 2).
 -define(DBS, 15).
 -define(TX_IDS, 255).
 

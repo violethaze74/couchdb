@@ -148,7 +148,8 @@ create(#{} = Db0, Options) ->
     % Eventually DbPrefix will be HCA allocated. For now
     % we're just using the DbName so that debugging is easier.
     DbKey = erlfdb_tuple:pack({?ALL_DBS, DbName}, LayerPrefix),
-    DbPrefix = erlfdb_tuple:pack({?DBS, DbName}, LayerPrefix),
+    #{allocator := Allocator} = erlfdb_directory:root(),
+    DbPrefix = erlfdb_hca:allocate(Allocator, Tx),
     erlfdb:set(Tx, DbKey, DbPrefix),
 
     % This key is responsible for telling us when something in
@@ -285,8 +286,20 @@ delete(#{} = Db) ->
     } = ensure_current(Db),
 
     DbKey = erlfdb_tuple:pack({?ALL_DBS, DbName}, LayerPrefix),
-    erlfdb:clear(Tx, DbKey),
-    erlfdb:clear_range_startswith(Tx, DbPrefix),
+    DoRecovery = config:get_boolean("couchdb",
+        "enable_database_recovery", false),
+    case DoRecovery of
+        true ->
+            {Mega, Secs, _} = os:timestamp(),
+            NowSecs = Mega * 1000000 + Secs,
+            NewDbKey = erlfdb_tuple:pack({?DELETED_DBS, DbName, NowSecs},
+                LayerPrefix),
+            erlfdb:set(Tx, NewDbKey, DbPrefix),
+            erlfdb:clear(Tx, DbKey);
+        false ->
+            erlfdb:clear(Tx, DbKey),
+            erlfdb:clear_range_startswith(Tx, DbPrefix)
+    end,
     bump_metadata_version(Tx),
     ok.
 
