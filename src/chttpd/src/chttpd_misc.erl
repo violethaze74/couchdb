@@ -14,6 +14,8 @@
 
 -export([
     handle_all_dbs_req/1,
+    handle_deleted_dbs_req/1,
+    handle_undelete_db_req/1,
     handle_dbs_info_req/1,
     handle_favicon_req/1,
     handle_favicon_req/2,
@@ -145,6 +147,105 @@ handle_all_dbs_req(#httpd{method='GET'}=Req) ->
     end;
 handle_all_dbs_req(Req) ->
     send_method_not_allowed(Req, "GET,HEAD").
+
+handle_deleted_dbs_req(#httpd{path_parts=[<<"_deleted_dbs">>]}=Req) ->
+    deleted_dbs_req(Req);
+handle_deleted_dbs_req(#httpd{path_parts=[<<"_deleted_dbs">>|DbName]}=Req) ->
+    deleted_dbs_info_req(Req, list_to_binary(DbName)).
+
+deleted_dbs_req(#httpd{method='GET'}=Req) ->
+    #mrargs{
+        start_key = StartKey,
+        end_key = EndKey,
+        direction = Dir,
+        limit = Limit,
+        skip = Skip
+    } = couch_mrview_http:parse_params(Req, undefined),
+
+    Options = [
+        {start_key, StartKey},
+        {end_key, EndKey},
+        {dir, Dir},
+        {limit, Limit},
+        {skip, Skip}
+    ],
+
+    % Eventually the Etag for this request will be derived
+    % from the \xFFmetadataVersion key in fdb
+    Etag = <<"foo">>,
+
+    {ok, Resp} = chttpd:etag_respond(Req, Etag, fun() ->
+        {ok, Resp} = chttpd:start_delayed_json_response(Req, 200, [{"ETag",Etag}]),
+        Callback = fun all_dbs_callback/2,
+        Acc = #vacc{req=Req,resp=Resp},
+        fabric2_db:list_deleted_dbs(Callback, Acc, Options)
+    end),
+    case is_record(Resp, vacc) of
+        true -> {ok, Resp#vacc.resp};
+        _ -> {ok, Resp}
+    end;
+deleted_dbs_req(Req) ->
+    send_method_not_allowed(Req, "GET,HEAD").
+
+deleted_dbs_info_req(#httpd{user_ctx=Ctx}=Req, DbName) ->
+    couch_httpd:verify_is_server_admin(Req),
+    case fabric2_db:deleted_dbs_info(DbName, [{user_ctx, Ctx}]) of
+        {ok, Result} ->
+            {ok, Resp} = chttpd:start_json_response(Req, 200),
+            send_chunk(Resp, "["),
+            lists:foldl(fun({Timestamp, Info}, AccSeparator) ->
+                Json = ?JSON_ENCODE({[
+                    {key, DbName},
+                    {timestamp, Timestamp},
+                    {value, {Info}}
+                ]}),
+                send_chunk(Resp, AccSeparator ++ Json),
+                "," % AccSeparator now has a comma
+            end, "", Result),
+            send_chunk(Resp, "]"),
+            chttpd:end_json_response(Resp);
+        Error ->
+            throw(Error)
+    end;
+deleted_dbs_info_req(Req, _DbName) ->
+    send_method_not_allowed(Req, "GET,HEAD").
+
+handle_undelete_db_req(#httpd{method='POST'}=Req) ->
+    undelete_db_req(Req);
+handle_undelete_db_req(Req) ->
+    send_method_not_allowed(Req, "POST").
+
+undelete_db_req(#httpd{user_ctx=Ctx}=Req) ->
+    couch_httpd:verify_is_server_admin(Req),
+    chttpd:validate_ctype(Req, "application/json"),
+    {JsonProps} = chttpd:json_body_obj(Req),
+    DbName = case couch_util:get_value(<<"source">>, JsonProps) of
+        undefined ->
+            throw({bad_request,
+                <<"POST body must include `source` parameter.">>});
+        DbName0 ->
+            DbName0
+    end,
+    TimeStamp = case couch_util:get_value(<<"source_timestamp">>, JsonProps) of
+        undefined ->
+            throw({bad_request,
+                <<"POST body must include `source_timestamp` parameter.">>});
+        TimeStamp0 ->
+            TimeStamp0
+    end,
+    TgtDbName = case couch_util:get_value(<<"target">>, JsonProps) of
+        undefined ->  DbName;
+        TgtDbName0 -> TgtDbName0
+    end,
+
+    case fabric2_db:undelete(DbName, TgtDbName, TimeStamp, [{user_ctx, Ctx}]) of
+        ok ->
+            send_json(Req, 200, {[{ok, true}]});
+        {error, file_exists} ->
+            chttpd:send_error(Req, file_exists);
+        Error ->
+            throw(Error)
+    end.
 
 all_dbs_callback({meta, _Meta}, #vacc{resp=Resp0}=Acc) ->
     {ok, Resp1} = chttpd:send_delayed_chunk(Resp0, "["),

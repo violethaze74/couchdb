@@ -17,10 +17,16 @@
     create/2,
     open/2,
     delete/2,
+    deleted_dbs_info/2,
+    undelete/4,
 
     list_dbs/0,
     list_dbs/1,
     list_dbs/3,
+
+    list_deleted_dbs/0,
+    list_deleted_dbs/1,
+    list_deleted_dbs/3,
 
     list_dbs_info/0,
     list_dbs_info/1,
@@ -213,6 +219,24 @@ delete(DbName, Options) ->
     end.
 
 
+deleted_dbs_info(DbName, Options) ->
+    Result = fabric2_fdb:transactional(DbName, Options, fun(TxDb) ->
+        fabric2_fdb:deleted_dbs_info(TxDb)
+    end),
+    {ok, lists:reverse(Result)}.
+
+
+undelete(DbName, TgtDbName, TimeStamp, Options) ->
+    case validate_dbname(TgtDbName) of
+        ok ->
+            fabric2_fdb:transactional(DbName, Options, fun(TxDb) ->
+                fabric2_fdb:undelete(TxDb, TgtDbName, TimeStamp)
+            end);
+        Error ->
+            Error
+    end.
+
+
 list_dbs() ->
     list_dbs([]).
 
@@ -238,6 +262,38 @@ list_dbs(UserFun, UserAcc0, Options) ->
                     UserAcc1,
                     Options
                 ),
+            {ok, maybe_stop(UserFun(complete, UserAcc2))}
+        catch throw:{stop, FinalUserAcc} ->
+            {ok, FinalUserAcc}
+        end
+    end).
+
+
+list_deleted_dbs() ->
+    list_deleted_dbs([]).
+
+
+list_deleted_dbs(Options) ->
+    Callback = fun(DbName, Acc) -> [DbName | Acc] end,
+    DbNames = fabric2_fdb:transactional(fun(Tx) ->
+        fabric2_fdb:list_deleted_dbs(Tx, Callback, [], Options)
+    end),
+    lists:reverse(DbNames).
+
+
+list_deleted_dbs(UserFun, UserAcc0, Options) ->
+    FoldFun = fun
+        (DbName, Acc) -> maybe_stop(UserFun({row, [{id, DbName}]}, Acc))
+    end,
+    fabric2_fdb:transactional(fun(Tx) ->
+        try
+            UserAcc1 = maybe_stop(UserFun({meta, []}, UserAcc0)),
+            UserAcc2 = fabric2_fdb:list_deleted_dbs(
+                Tx,
+                FoldFun,
+                UserAcc1,
+                Options
+            ),
             {ok, maybe_stop(UserFun(complete, UserAcc2))}
         catch throw:{stop, FinalUserAcc} ->
             {ok, FinalUserAcc}

@@ -23,11 +23,15 @@
     ensure_current/1,
     delete/1,
     exists/1,
+    deleted_dbs_info/1,
+    undelete/3,
 
     get_dir/1,
 
     list_dbs/4,
     list_dbs_info/4,
+
+    list_deleted_dbs/4,
 
     get_info/1,
     get_info_future/2,
@@ -346,10 +350,66 @@ delete(#{} = Db) ->
     } = ensure_current(Db),
 
     DbKey = erlfdb_tuple:pack({?ALL_DBS, DbName}, LayerPrefix),
-    erlfdb:clear(Tx, DbKey),
-    erlfdb:clear_range_startswith(Tx, DbPrefix),
+    DoRecovery = fabric2_util:do_recovery(),
+    case DoRecovery of
+        true ->
+            Timestamp = list_to_binary(fabric2_util:iso8601_timestamp()),
+            DeletedDbKey = erlfdb_tuple:pack({?DELETED_DBS, DbName, Timestamp},
+                LayerPrefix),
+            erlfdb:set(Tx, DeletedDbKey, DbPrefix),
+            erlfdb:clear(Tx, DbKey);
+        false ->
+            erlfdb:clear(Tx, DbKey),
+            erlfdb:clear_range_startswith(Tx, DbPrefix)
+    end,
     bump_metadata_version(Tx),
     ok.
+
+
+deleted_dbs_info(#{} = Db0) ->
+    #{
+        name := DbName,
+        tx := Tx,
+        layer_prefix := LayerPrefix
+    } = ensure_current(Db0, false),
+
+    DeletedDbKey =  erlfdb_tuple:pack({?DELETED_DBS, DbName}, LayerPrefix),
+    DeletedDbs = erlfdb:wait(erlfdb:get_range_startswith(Tx, DeletedDbKey)),
+    lists:foldl(fun({DbKey, DbPrefix}, Acc) ->
+        DBInfo = get_info_wait(get_info_future(Tx, DbPrefix)),
+        {?DELETED_DBS, DbName, DeletedTS} =
+            erlfdb_tuple:unpack(DbKey, LayerPrefix),
+        [{DeletedTS, DBInfo}| Acc]
+    end, [], DeletedDbs).
+
+
+undelete(#{} = Db0, TgtDbName, TimeStamp) ->
+    #{
+        name := DbName,
+        tx := Tx,
+        layer_prefix := LayerPrefix
+    } = ensure_current(Db0, false),
+    DbKey = erlfdb_tuple:pack({?ALL_DBS, TgtDbName}, LayerPrefix),
+    case erlfdb:wait(erlfdb:get(Tx, DbKey)) of
+        Bin when is_binary(Bin) ->
+            {error, file_exists};
+        not_found ->
+            DeletedDbTupleKey = {
+                ?DELETED_DBS,
+                DbName,
+                TimeStamp
+            },
+            DeleteDbKey =  erlfdb_tuple:pack(DeletedDbTupleKey, LayerPrefix),
+            case erlfdb:wait(erlfdb:get(Tx, DeleteDbKey)) of
+                not_found ->
+                    erlang:error({not_found, invalid_timestamp});
+                DbPrefix ->
+                    erlfdb:set(Tx, DbKey, DbPrefix),
+                    erlfdb:clear(Tx, DeleteDbKey),
+                    bump_metadata_version(Tx),
+                    ok
+            end
+    end.
 
 
 exists(#{name := DbName} = Db) when is_binary(DbName) ->
@@ -381,6 +441,19 @@ list_dbs(Tx, Callback, AccIn, Options0) ->
     Prefix = erlfdb_tuple:pack({?ALL_DBS}, LayerPrefix),
     fold_range({tx, Tx}, Prefix, fun({K, _V}, Acc) ->
         {DbName} = erlfdb_tuple:unpack(K, Prefix),
+        Callback(DbName, Acc)
+    end, AccIn, Options).
+
+
+list_deleted_dbs(Tx, Callback, AccIn, Options0) ->
+    Options = case fabric2_util:get_value(restart_tx, Options0) of
+        undefined -> [{restart_tx, true} | Options0];
+        _AlreadySet -> Options0
+    end,
+    LayerPrefix = get_dir(Tx),
+    Prefix = erlfdb_tuple:pack({?DELETED_DBS}, LayerPrefix),
+    fold_range({tx, Tx}, Prefix, fun({K, _V}, Acc) ->
+        {DbName, _Timestamp} = erlfdb_tuple:unpack(K, Prefix),
         Callback(DbName, Acc)
     end, AccIn, Options).
 
