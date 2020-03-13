@@ -131,7 +131,6 @@ write_doc(TxDb, Sig, ViewIds, Doc) ->
     ExistingViewKeys = get_view_keys(TxDb, Sig, DocId),
 
     clear_id_idx(TxDb, Sig, DocId),
-
     lists:foreach(fun({ViewId, NewRows, KVSize}) ->
         update_id_idx(TxDb, Sig, ViewId, DocId, NewRows, KVSize),
 

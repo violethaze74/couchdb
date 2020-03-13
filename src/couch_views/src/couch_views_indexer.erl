@@ -105,6 +105,8 @@ init() ->
             NewRetry = Retries + 1,
             RetryLimit = retry_limit(),
 
+            couch_log:error("XKCD: ~p:~p~n~p~n", [Error, Reason, erlang:get_stacktrace()]),
+
             case should_retry(NewRetry, RetryLimit, Reason) of
                 true ->
                     DataErr = Data#{<<"retries">> := NewRetry},
@@ -156,50 +158,64 @@ add_error(Error, Reason, Data) ->
 
 
 update(#{} = Db, Mrst0, State0) ->
-    {Mrst2, State4} = fabric2_fdb:transactional(Db, fun(TxDb) ->
-        % In the first iteration of update we need
-        % to populate our db and view sequences
-        State1 = case State0 of
-            #{db_seq := undefined} ->
-                ViewSeq = couch_views_fdb:get_update_seq(TxDb, Mrst0),
-                State0#{
-                    tx_db := TxDb,
-                    db_seq := fabric2_db:get_update_seq(TxDb),
-                    view_seq := ViewSeq,
-                    last_seq := ViewSeq
-                };
-            _ ->
-                State0#{
-                    tx_db := TxDb
-                }
-        end,
+    {Mrst2, State4} = with_root_span(Mrst0, fun() ->
+        fabric2_fdb:transactional(Db, fun(TxDb) ->
+            % In the first iteration of update we need
+            % to populate our db and view sequences
+            State1 = case State0 of
+                #{db_seq := undefined} ->
+                    ViewSeq = couch_views_fdb:get_update_seq(TxDb, Mrst0),
+                    State0#{
+                        tx_db := TxDb,
+                        db_seq := fabric2_db:get_update_seq(TxDb),
+                        view_seq := ViewSeq,
+                        last_seq := ViewSeq
+                    };
+                _ ->
+                    State0#{
+                        tx_db := TxDb
+                    }
+            end,
 
-        {ok, State2} = fold_changes(State1),
+            {ok, State2} = ctrace:with_span(fold_changes, fun() ->
+                fold_changes(State1)
+            end),
 
-        #{
-            count := Count,
-            limit := Limit,
-            doc_acc := DocAcc,
-            last_seq := LastSeq
-        } = State2,
+            #{
+                count := Count,
+                limit := Limit,
+                doc_acc := DocAcc,
+                last_seq := LastSeq
+            } = State2,
 
-        DocAcc1 = fetch_docs(TxDb, DocAcc),
-        {Mrst1, MappedDocs} = map_docs(Mrst0, DocAcc1),
-        write_docs(TxDb, Mrst1, MappedDocs, State2),
+            DocAcc1 = ctrace:with_span(fetch_docs, fun() ->
+                fetch_docs(TxDb, DocAcc)
+            end),
+            {Mrst1, MappedDocs} = ctrace:with_span(map_docs, fun() ->
+                map_docs(Mrst0, DocAcc1)
+            end),
+            ctrace:with_span(write_docs, fun() ->
+                write_docs(TxDb, Mrst1, MappedDocs, State2)
+            end),
 
-        case Count < Limit of
-            true ->
-                report_progress(State2, finished),
-                {Mrst1, finished};
-            false ->
-                State3 = report_progress(State2, update),
-                {Mrst1, State3#{
-                    tx_db := undefined,
-                    count := 0,
-                    doc_acc := [],
-                    view_seq := LastSeq
-                }}
-        end
+            case Count < Limit of
+                true ->
+                    ctrace:with_span(report_progress, fun() ->
+                        report_progress(State2, finished)
+                    end),
+                    {Mrst1, finished};
+                false ->
+                    State3 = ctrace:with_span(report_progress, fun() ->
+                        report_progress(State2, update)
+                    end),
+                    {Mrst1, State3#{
+                        tx_db := undefined,
+                        count := 0,
+                        doc_acc := [],
+                        view_seq := LastSeq
+                    }}
+            end
+        end)
     end),
 
     case State4 of
@@ -310,7 +326,10 @@ write_docs(TxDb, Mrst, Docs, State) ->
 
     lists:foreach(fun(Doc0) ->
         Doc1 = calculate_kv_sizes(Mrst, Doc0, KeyLimit, ValLimit),
-        couch_views_fdb:write_doc(TxDb, Sig, ViewIds, Doc1)
+        Tags = #{doc_id => maps:get(id, Doc0)},
+        ctrace:with_span(write_doc, [{tags, Tags}], fun() ->
+            couch_views_fdb:write_doc(TxDb, Sig, ViewIds, Doc1)
+        end)
     end, Docs),
 
     couch_views_fdb:set_update_seq(TxDb, Sig, LastSeq).
@@ -457,6 +476,23 @@ report_progress(State, UpdateType) ->
                     couch_log:error("~s job halted :: ~w", [?MODULE, Job1]),
                     exit(normal)
             end
+    end.
+
+
+with_root_span(Mrst, Fun) ->
+    TraceEnabled = fabric2_util:get_value(<<"trace">>, Mrst#mrst.design_opts),
+    case ctrace:is_enabled() andalso TraceEnabled == true of
+        true ->
+            Tags = #{
+                'db_name' => Mrst#mrst.db_name,
+                'idx_name' => Mrst#mrst.idx_name,
+                'signature' => Mrst#mrst.sig,
+                'language' => Mrst#mrst.language,
+                'views' => length(Mrst#mrst.views)
+            },
+            ctrace:with_span('views.build', [{tags, Tags}], Fun);
+        false ->
+            Fun()
     end.
 
 
