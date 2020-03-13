@@ -21,6 +21,7 @@
 
     fold_map_idx/6,
 
+    get_existing_keys/3,
     write_doc/4
 ]).
 
@@ -107,12 +108,33 @@ fold_map_idx(TxDb, Sig, ViewId, Options, Callback, Acc0) ->
     Acc1.
 
 
+get_existing_keys(TxDb, Sig, Docs) ->
+    #{
+        tx := Tx,
+        db_prefix := DbPrefix
+    } = TxDb,
+
+    Futures = lists:map(fun(#{id := DocId}) ->
+        {Start, End} = id_idx_range(DbPrefix, Sig, DocId),
+        erlfdb:fold_range_future(Tx, Start, End, [])
+    end, Docs),
+
+    lists:zipwith(fun(Future, #{id := DocId} = Doc) ->
+        Entries = erlfdb:fold_range_wait(Tx, Future, fun({K, V}, Acc) ->
+            {?DB_VIEWS, ?VIEW_DATA, Sig, ?VIEW_ID_RANGE, DocId, ViewId} =
+                    erlfdb_tuple:unpack(K, DbPrefix),
+            [TotalKeys, TotalSize, UniqueKeys] = couch_views_encoding:decode(V),
+            [{ViewId, TotalKeys, TotalSize, UniqueKeys} | Acc]
+        end, []),
+        Doc#{existing_keys => lists:sort(Entries)}
+    end, Futures, Docs).
+
+
 write_doc(TxDb, Sig, _ViewIds, #{deleted := true} = Doc) ->
     #{
-        id := DocId
+        id := DocId,
+        existing_keys := ExistingViewKeys
     } = Doc,
-
-    ExistingViewKeys = get_view_keys(TxDb, Sig, DocId),
 
     clear_id_idx(TxDb, Sig, DocId),
     lists:foreach(fun({ViewId, TotalKeys, TotalSize, UniqueKeys}) ->
@@ -124,11 +146,11 @@ write_doc(TxDb, Sig, _ViewIds, #{deleted := true} = Doc) ->
 write_doc(TxDb, Sig, ViewIds, Doc) ->
     #{
         id := DocId,
+        existing_keys := ExistingViewKeys,
         results := Results,
         kv_sizes := KVSizes
     } = Doc,
 
-    ExistingViewKeys = get_view_keys(TxDb, Sig, DocId),
 
     clear_id_idx(TxDb, Sig, DocId),
     lists:foreach(fun({ViewId, NewRows, KVSize}) ->
@@ -244,20 +266,6 @@ update_map_idx(TxDb, Sig, ViewId, DocId, ExistingKeys, NewRows) ->
         Val = erlfdb_tuple:pack({Key2, EV}),
         ok = erlfdb:set(Tx, KK, Val)
     end, KVsToAdd).
-
-
-get_view_keys(TxDb, Sig, DocId) ->
-    #{
-        tx := Tx,
-        db_prefix := DbPrefix
-    } = TxDb,
-    {Start, End} = id_idx_range(DbPrefix, Sig, DocId),
-    lists:map(fun({K, V}) ->
-        {?DB_VIEWS, ?VIEW_DATA, Sig, ?VIEW_ID_RANGE, DocId, ViewId} =
-                erlfdb_tuple:unpack(K, DbPrefix),
-        [TotalKeys, TotalSize, UniqueKeys] = couch_views_encoding:decode(V),
-        {ViewId, TotalKeys, TotalSize, UniqueKeys}
-    end, erlfdb:get_range(Tx, Start, End, [])).
 
 
 update_row_count(TxDb, Sig, ViewId, Increment) ->

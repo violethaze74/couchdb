@@ -310,7 +310,7 @@ map_docs(Mrst, Docs) ->
     {Mrst1, MappedDocs}.
 
 
-write_docs(TxDb, Mrst, Docs, State) ->
+write_docs(TxDb, Mrst, Docs0, State) ->
     #mrst{
         views = Views,
         sig = Sig
@@ -323,6 +323,10 @@ write_docs(TxDb, Mrst, Docs, State) ->
     ViewIds = [View#mrview.id_num || View <- Views],
     KeyLimit = key_size_limit(),
     ValLimit = value_size_limit(),
+
+    Docs = ctrace:with_span(get_existing_keys, fun() ->
+        couch_views_fdb:get_existing_keys(TxDb, Sig, Docs0)
+    end),
 
     lists:foreach(fun(Doc0) ->
         Doc1 = calculate_kv_sizes(Mrst, Doc0, KeyLimit, ValLimit),
