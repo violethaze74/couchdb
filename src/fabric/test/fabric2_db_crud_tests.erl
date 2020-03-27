@@ -36,8 +36,9 @@ crud_test_() ->
                     ?TDEF_FE(create_db),
                     ?TDEF_FE(open_db),
                     ?TDEF_FE(delete_db),
-                    ?TDEF_FE(undelete_db),
                     ?TDEF_FE(recreate_db),
+                    ?TDEF_FE(undelete_db),
+                    ?TDEF_FE(delete_deleted_db),
                     ?TDEF_FE(list_dbs),
                     ?TDEF_FE(list_dbs_user_fun),
                     ?TDEF_FE(list_dbs_user_fun_partial),
@@ -162,6 +163,25 @@ undelete_db(_) ->
 
     {ok, AllDbInfos} = fabric2_db:list_dbs_info(),
     ?assert(is_db_info_member(DbName, AllDbInfos)).
+
+
+delete_deleted_db(_) ->
+    DbName = ?tempdb(),
+    ?assertError(database_does_not_exist, fabric2_db:delete(DbName, [])),
+
+    ?assertMatch({ok, _}, fabric2_db:create(DbName, [])),
+    ?assertEqual(true, ets:member(fabric2_server, DbName)),
+
+    ok = config:set("couchdb", "enable_database_recovery", "true", false),
+    ?assertEqual(ok, fabric2_db:delete(DbName, [])),
+    ok = config:delete("couchdb", "enable_database_recovery", false),
+    ?assertEqual(false, ets:member(fabric2_server, DbName)),
+
+    {ok, [{Timestamp, _Info}]} = fabric2_db:deleted_dbs_info(DbName, []),
+    ok = fabric2_db:delete_deleted(DbName, Timestamp, []),
+
+    DeletedDbs = fabric2_db:list_deleted_dbs(),
+    ?assert(not lists:member(DbName, DeletedDbs)).
 
 
 list_dbs(_) ->

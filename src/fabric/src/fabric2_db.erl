@@ -19,6 +19,7 @@
     delete/2,
     deleted_dbs_info/2,
     undelete/4,
+    delete_deleted/3,
 
     list_dbs/0,
     list_dbs/1,
@@ -184,8 +185,7 @@ create(DbName, Options) ->
 
 
 open(DbName, Options) ->
-    UUID = fabric2_util:get_value(uuid, Options),
-    case fabric2_server:fetch(DbName, UUID) of
+    case fabric2_server:fetch(DbName) of
         #{} = Db ->
             Db1 = maybe_set_user_ctx(Db, Options),
             {ok, require_member_check(Db1)};
@@ -235,6 +235,12 @@ undelete(DbName, TgtDbName, TimeStamp, Options) ->
         Error ->
             Error
     end.
+
+
+delete_deleted(DbName, TimeStamp, Options) ->
+    fabric2_fdb:transactional(DbName, Options, fun(TxDb) ->
+        fabric2_fdb:delete_deleted(TxDb, TimeStamp)
+    end).
 
 
 list_dbs() ->

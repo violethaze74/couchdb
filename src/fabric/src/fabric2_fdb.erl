@@ -25,6 +25,7 @@
     exists/1,
     deleted_dbs_info/1,
     undelete/3,
+    delete_deleted/2,
 
     get_dir/1,
 
@@ -356,8 +357,13 @@ delete(#{} = Db) ->
             Timestamp = list_to_binary(fabric2_util:iso8601_timestamp()),
             DeletedDbKey = erlfdb_tuple:pack({?DELETED_DBS, DbName, Timestamp},
                 LayerPrefix),
-            erlfdb:set(Tx, DeletedDbKey, DbPrefix),
-            erlfdb:clear(Tx, DbKey);
+            case erlfdb:wait(erlfdb:get(Tx, DeletedDbKey)) of
+                not_found ->
+                    erlfdb:set(Tx, DeletedDbKey, DbPrefix),
+                    erlfdb:clear(Tx, DbKey);
+                _Val ->
+                    erlang:error({deleted_database_exists, DbName})
+            end;
         false ->
             erlfdb:clear(Tx, DbKey),
             erlfdb:clear_range_startswith(Tx, DbPrefix)
@@ -410,6 +416,30 @@ undelete(#{} = Db0, TgtDbName, TimeStamp) ->
                     ok
             end
     end.
+
+
+delete_deleted(#{} = Db0, TimeStamp) ->
+    #{
+        name := DbName,
+        tx := Tx,
+        layer_prefix := LayerPrefix
+    } = ensure_current(Db0),
+
+    DeletedDbTupleKey = {
+        ?DELETED_DBS,
+        DbName,
+        TimeStamp
+    },
+    DeleteDbKey =  erlfdb_tuple:pack(DeletedDbTupleKey, LayerPrefix),
+    case erlfdb:wait(erlfdb:get(Tx, DeleteDbKey)) of
+        not_found ->
+            erlang:error({not_found});
+        DbPrefix ->
+            erlfdb:clear(Tx, DeleteDbKey),
+            erlfdb:clear_range_startswith(Tx, DbPrefix),
+            bump_metadata_version(Tx)
+    end,
+    ok.
 
 
 exists(#{name := DbName} = Db) when is_binary(DbName) ->

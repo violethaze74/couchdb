@@ -53,6 +53,7 @@ deleted_dbs_test_() ->
                     fun should_list_deleted_dbs/1,
                     fun should_list_deleted_dbs_info/1,
                     fun should_undelete_db/1,
+                    fun should_delete_deleted_db/1,
                     fun should_undelete_db_to_target_db/1,
                     fun should_not_undelete_db_to_existing_db/1
                 ]
@@ -70,9 +71,9 @@ should_return_error_for_deleted_dbs(Url) ->
 
         {Body} = jiffy:decode(ResultBody),
         [
-            ?assertEqual(<<"method_not_allowed">>,
+            ?assertEqual(<<"bad_request">>,
                 couch_util:get_value(<<"error">>, Body)),
-            ?assertEqual(405, Code)
+            ?assertEqual(400, Code)
         ]
     end).
 
@@ -81,7 +82,7 @@ should_list_deleted_dbs(Url) ->
     ?_test(begin
         DbName1 = create_and_delete_db(Url),
         DbName2 = create_and_delete_db(Url),
-        {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs?",
+        {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs/",
             [?CONTENT_JSON, ?AUTH]),
         BodyJson = jiffy:decode(ResultBody),
         ?assertEqual(true, lists:member(DbName1, BodyJson)),
@@ -105,23 +106,42 @@ should_list_deleted_dbs_info(Url) ->
 should_undelete_db(Url) ->
     ?_test(begin
         DbName = create_and_delete_db(Url),
-        {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs/"
-            ++ DbName, [?CONTENT_JSON, ?AUTH]),
+        {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs/" ++
+            DbName, [?CONTENT_JSON, ?AUTH]),
         BodyJson = jiffy:decode(ResultBody),
 
         {Db1Data} = lists:nth(1, BodyJson),
         TimeStamp = couch_util:get_value(<<"timestamp">>, Db1Data),
 
-        NewDoc = "{\"source\": \"" ++ ?b2l(DbName) ++
-            "\", \"source_timestamp\":\"" ++ ?b2l(TimeStamp) ++ "\"}",
+        NewDoc = "{\"undelete\": {\"source\": \"" ++ ?b2l(DbName) ++
+            "\", \"source_timestamp\":\"" ++ ?b2l(TimeStamp) ++ "\"}}",
 
-        {ok, Status, _, _} = test_request:post(Url ++ "/_undelete_db",
+        {ok, Status, _, _} = test_request:post(Url ++ "/_deleted_dbs",
             [?CONTENT_JSON, ?AUTH], NewDoc),
         ?assertEqual(200, Status),
 
         {ok, Status2, _, _} = test_request:get(Url ++ DbName,
             [?CONTENT_JSON, ?AUTH], NewDoc),
         ?assertEqual(200, Status2)
+    end).
+
+
+should_delete_deleted_db(Url) ->
+    ?_test(begin
+        DbName = create_and_delete_db(Url),
+        {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs/" ++
+            DbName, [?CONTENT_JSON, ?AUTH]),
+        BodyJson = jiffy:decode(ResultBody),
+
+        {Db1Data} = lists:nth(1, BodyJson),
+        TimeStamp = couch_util:get_value(<<"timestamp">>, Db1Data),
+
+        NewDoc = "{\"delete\": {\"source\": \"" ++ ?b2l(DbName) ++
+            "\", \"source_timestamp\":\"" ++ ?b2l(TimeStamp) ++ "\"}}",
+
+        {ok, Status, _, _} = test_request:post(Url ++ "/_deleted_dbs",
+            [?CONTENT_JSON, ?AUTH], NewDoc),
+        ?assertEqual(200, Status)
     end).
 
 
@@ -136,11 +156,11 @@ should_undelete_db_to_target_db(Url) ->
         TimeStamp = couch_util:get_value(<<"timestamp">>, Db1Data),
 
         NewDbName = ?tempdb(),
-        NewDoc = "{\"source\": \"" ++ ?b2l(DbName) ++
+        NewDoc = "{\"undelete\": {\"source\": \"" ++ ?b2l(DbName) ++
             "\", \"source_timestamp\":\"" ++ ?b2l(TimeStamp) ++
-            "\", \"target\": \"" ++ ?b2l(NewDbName) ++ "\" }",
+            "\", \"target\": \"" ++ ?b2l(NewDbName) ++ "\" }}",
     
-        {ok, RC2, _, _} = test_request:post(Url ++ "/_undelete_db",
+        {ok, RC2, _, _} = test_request:post(Url ++ "/_deleted_dbs",
             [?CONTENT_JSON, ?AUTH], NewDoc),
         ?assertEqual(200, RC2),
     
@@ -162,11 +182,11 @@ should_not_undelete_db_to_existing_db(Url) ->
 
         NewDbName = ?tempdb(),
         create_db(Url ++ NewDbName),
-        NewDoc = "{\"source\": \"" ++ ?b2l(DbName) ++
+        NewDoc = "{\"undelete\": {\"source\": \"" ++ ?b2l(DbName) ++
             "\", \"source_timestamp\":\"" ++ ?b2l(TimeStamp) ++
-            "\", \"target\": \"" ++ ?b2l(NewDbName) ++ "\" }",
+            "\", \"target\": \"" ++ ?b2l(NewDbName) ++ "\" }}",
 
-        {ok, RC, _, Body} = test_request:post(Url ++ "/_undelete_db",
+        {ok, RC, _, Body} = test_request:post(Url ++ "/_deleted_dbs",
             [?CONTENT_JSON, ?AUTH], NewDoc),
         {JsonBody} = jiffy:decode(Body),
         [
