@@ -219,18 +219,17 @@ deleted_dbs_post_req(#httpd{user_ctx=Ctx}=Req) ->
     {JsonProps} = chttpd:json_body_obj(Req),
     UndeleteJson0 = couch_util:get_value(<<"undelete">>, JsonProps, undefined),
     DeleteJson0 = couch_util:get_value(<<"delete">>, JsonProps, undefined),
-
-    case UndeleteJson0 of
-        undefined ->
-            case DeleteJson0 of
-                undefined ->
-                    throw({bad_request, <<"POST body must include `undeleted` "
-                        "or `delete` parameter.">>});
-                DeleteJson ->
-                    handle_delete_deleted_req(Req, DeleteJson)
-            end;
-        UndeleteJson ->
-            handle_undelete_db_req(Req, UndeleteJson)
+    case {UndeleteJson0, DeleteJson0}  of
+        {undefined, undefined} ->
+            throw({bad_request, <<"POST body must include `undeleted` "
+                "or `delete` parameter.">>});
+        {UndeleteJson, undefined} ->
+            handle_undelete_db_req(Req, UndeleteJson);
+        {undefined, DeleteJson} ->
+            handle_delete_deleted_req(Req, DeleteJson);
+        {_Else, _Else} ->
+            throw({bad_request,
+                <<"`undeleted` and `delete` are mutually exclusive">>})
     end.
 
 handle_undelete_db_req(#httpd{user_ctx=Ctx}=Req, {JsonProps}) ->
