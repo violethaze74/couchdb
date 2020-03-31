@@ -53,7 +53,7 @@ deleted_dbs_test_() ->
                     fun should_list_deleted_dbs/1,
                     fun should_list_deleted_dbs_info/1,
                     fun should_undelete_db/1,
-                    fun should_delete_deleted_db/1,
+                    fun should_remove_deleted_db/1,
                     fun should_undelete_db_to_target_db/1,
                     fun should_not_undelete_db_to_existing_db/1
                 ]
@@ -126,7 +126,7 @@ should_undelete_db(Url) ->
     end).
 
 
-should_delete_deleted_db(Url) ->
+should_remove_deleted_db(Url) ->
     ?_test(begin
         DbName = create_and_delete_db(Url),
         {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs/" ++

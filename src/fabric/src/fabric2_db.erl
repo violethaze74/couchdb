@@ -17,9 +17,7 @@
     create/2,
     open/2,
     delete/2,
-    deleted_dbs_info/2,
     undelete/4,
-    delete_deleted/3,
 
     list_dbs/0,
     list_dbs/1,
@@ -32,6 +30,8 @@
     list_dbs_info/0,
     list_dbs_info/1,
     list_dbs_info/3,
+
+    deleted_dbs_info/2,
 
     check_is_admin/1,
     check_is_member/1,
@@ -185,7 +185,8 @@ create(DbName, Options) ->
 
 
 open(DbName, Options) ->
-    case fabric2_server:fetch(DbName) of
+    UUID = fabric2_util:get_value(uuid, Options),
+    case fabric2_server:fetch(DbName, UUID) of
         #{} = Db ->
             Db1 = maybe_set_user_ctx(Db, Options),
             {ok, require_member_check(Db1)};
@@ -210,12 +211,19 @@ delete(DbName, Options) ->
     % Delete doesn't check user_ctx, that's done at the HTTP API level
     % here we just care to get the `database_does_not_exist` error thrown
     Options1 = lists:keystore(user_ctx, 1, Options, ?ADMIN_CTX),
-    {ok, Db} = open(DbName, Options1),
-    Resp = fabric2_fdb:transactional(Db, fun(TxDb) ->
-        fabric2_fdb:delete(TxDb)
-    end),
-    if Resp /= ok -> Resp; true ->
-        fabric2_server:remove(DbName)
+    case lists:keyfind(deleted_at, 1, Options1) of
+        {deleted_at, TimeStamp} ->
+            fabric2_fdb:transactional(DbName, Options1, fun(TxDb) ->
+                fabric2_fdb:remove_deleted_db(TxDb, TimeStamp)
+            end);
+        false ->
+            {ok, Db} = open(DbName, Options1),
+            Resp = fabric2_fdb:transactional(Db, fun(TxDb) ->
+                fabric2_fdb:delete(TxDb)
+            end),
+            if Resp /= ok -> Resp; true ->
+                fabric2_server:remove(DbName)
+            end
     end.
 
 
@@ -235,12 +243,6 @@ undelete(DbName, TgtDbName, TimeStamp, Options) ->
         Error ->
             Error
     end.
-
-
-delete_deleted(DbName, TimeStamp, Options) ->
-    fabric2_fdb:transactional(DbName, Options, fun(TxDb) ->
-        fabric2_fdb:delete_deleted(TxDb, TimeStamp)
-    end).
 
 
 list_dbs() ->

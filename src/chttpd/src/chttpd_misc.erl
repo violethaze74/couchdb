@@ -147,14 +147,18 @@ handle_all_dbs_req(#httpd{method='GET'}=Req) ->
 handle_all_dbs_req(Req) ->
     send_method_not_allowed(Req, "GET,HEAD").
 
-handle_deleted_dbs_req(#httpd{path_parts=[<<"_deleted_dbs">>]}=Req) ->
-    deleted_dbs_req(Req);
-handle_deleted_dbs_req(#httpd{path_parts=[<<"_deleted_dbs">>, DbName]}=Req) ->
+handle_deleted_dbs_req(#httpd{method='GET', path_parts=[_]}=Req) ->
+    deleted_dbs_get_req(Req);
+handle_deleted_dbs_req(#httpd{method='GET', path_parts=[_, DbName]}=Req) ->
     deleted_dbs_info_req(Req, DbName);
+handle_deleted_dbs_req(#httpd{method='POST', path_parts=[_]}=Req) ->
+    deleted_dbs_post_req(Req);
+handle_deleted_dbs_req(#httpd{path_parts = PP}=Req) when length(PP) =< 2 ->
+    send_method_not_allowed(Req, "GET,HEAD,POST");
 handle_deleted_dbs_req(Req) ->
     chttpd:send_error(Req, not_found).
 
-deleted_dbs_req(#httpd{method='GET'}=Req) ->
+deleted_dbs_get_req(#httpd{method='GET'}=Req) ->
     #mrargs{
         start_key = StartKey,
         end_key = EndKey,
@@ -184,11 +188,7 @@ deleted_dbs_req(#httpd{method='GET'}=Req) ->
     case is_record(Resp, vacc) of
         true -> {ok, Resp#vacc.resp};
         _ -> {ok, Resp}
-    end;
-deleted_dbs_req(#httpd{method='POST'}=Req) ->
-    deleted_dbs_post_req(Req);
-deleted_dbs_req(Req) ->
-    send_method_not_allowed(Req, "GET,POST,HEAD").
+    end.
 
 deleted_dbs_info_req(#httpd{user_ctx=Ctx}=Req, DbName) ->
     couch_httpd:verify_is_server_admin(Req),
@@ -213,7 +213,7 @@ deleted_dbs_info_req(#httpd{user_ctx=Ctx}=Req, DbName) ->
 deleted_dbs_info_req(Req, _DbName) ->
     send_method_not_allowed(Req, "GET,HEAD").
 
-deleted_dbs_post_req(#httpd{user_ctx=Ctx}=Req) ->
+deleted_dbs_post_req(Req) ->
     couch_httpd:verify_is_server_admin(Req),
     chttpd:validate_ctype(Req, "application/json"),
     {JsonProps} = chttpd:json_body_obj(Req),
@@ -226,7 +226,7 @@ deleted_dbs_post_req(#httpd{user_ctx=Ctx}=Req) ->
         {UndeleteJson, undefined} ->
             handle_undelete_db_req(Req, UndeleteJson);
         {undefined, DeleteJson} ->
-            handle_delete_deleted_req(Req, DeleteJson);
+            handle_remove_deleted_req(Req, DeleteJson);
         {_Else, _Else} ->
             throw({bad_request,
                 <<"`undeleted` and `delete` are mutually exclusive">>})
@@ -256,11 +256,13 @@ handle_undelete_db_req(#httpd{user_ctx=Ctx}=Req, {JsonProps}) ->
             send_json(Req, 200, {[{ok, true}]});
         {error, file_exists} ->
             chttpd:send_error(Req, file_exists);
+        {error, not_found} ->
+            chttpd:send_error(Req, not_found);
         Error ->
             throw(Error)
     end.
 
-handle_delete_deleted_req(#httpd{user_ctx=Ctx}=Req, {JsonProps}) ->
+handle_remove_deleted_req(#httpd{user_ctx=Ctx}=Req, {JsonProps}) ->
     DbName = case couch_util:get_value(<<"source">>, JsonProps) of
         undefined ->
             throw({bad_request,
@@ -268,18 +270,18 @@ handle_delete_deleted_req(#httpd{user_ctx=Ctx}=Req, {JsonProps}) ->
         DbName0 ->
             DbName0
     end,
-    TimeStamp = case couch_util:get_value(<<"source_timestamp">>, JsonProps) of
+    TS = case couch_util:get_value(<<"source_timestamp">>, JsonProps) of
         undefined ->
             throw({bad_request,
                 <<"POST body must include `source_timestamp` parameter.">>});
         TimeStamp0 ->
             TimeStamp0
     end,
-    case fabric2_db:delete_deleted(DbName, TimeStamp, [{user_ctx, Ctx}]) of
+    case fabric2_db:delete(DbName, [{user_ctx, Ctx}, {deleted_at, TS}]) of
         ok ->
             send_json(Req, 200, {[{ok, true}]});
-        {error, file_exists} ->
-            chttpd:send_error(Req, file_exists);
+        {error, not_found} ->
+            chttpd:send_error(Req, not_found);
         Error ->
             throw(Error)
     end.
