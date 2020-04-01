@@ -387,6 +387,10 @@ undelete(#{} = Db0, TgtDbName, TimeStamp) ->
                 DbPrefix ->
                     erlfdb:set(Tx, DbKey, DbPrefix),
                     erlfdb:clear(Tx, DeleteDbKey),
+                    bump_db_version(#{
+                        tx => Tx,
+                        db_prefix => DbPrefix
+                    }),
                     ok
             end
     end.
@@ -410,7 +414,11 @@ remove_deleted_db(#{} = Db0, TimeStamp) ->
             erlang:error({not_found});
         DbPrefix ->
             erlfdb:clear(Tx, DeletedDbKey),
-            erlfdb:clear_range_startswith(Tx, DbPrefix)
+            erlfdb:clear_range_startswith(Tx, DbPrefix),
+            bump_db_version(#{
+                tx => Tx,
+                db_prefix => DbPrefix
+            })
     end,
     ok.
 

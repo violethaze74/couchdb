@@ -39,6 +39,7 @@ crud_test_() ->
                     ?TDEF_FE(recreate_db),
                     ?TDEF_FE(undelete_db),
                     ?TDEF_FE(remove_deleted_db),
+                    ?TDEF_FE(old_db_handle),
                     ?TDEF_FE(list_dbs),
                     ?TDEF_FE(list_dbs_user_fun),
                     ?TDEF_FE(list_dbs_user_fun_partial),
@@ -191,6 +192,60 @@ remove_deleted_db(_) ->
     ok = fabric2_db:delete(DbName, [{deleted_at, Timestamp}]),
     DeletedDbs = fabric2_db:list_deleted_dbs(),
     ?assert(not lists:member(DbName, DeletedDbs)).
+
+
+old_db_handle(_) ->
+    % db hard deleted
+    DbName1 = ?tempdb(),
+    ?assertError(database_does_not_exist, fabric2_db:delete(DbName1, [])),
+    ?assertMatch({ok, _}, fabric2_db:create(DbName1, [])),
+    {ok, Db1} = fabric2_db:open(DbName1, []),
+    ?assertMatch({ok, _}, fabric2_db:get_db_info(Db1)),
+    ?assertEqual(ok, fabric2_db:delete(DbName1, [])),
+    ?assertError(database_does_not_exist, fabric2_db:get_db_info(Db1)),
+
+    % db soft deleted
+    DbName2 = ?tempdb(),
+    ?assertError(database_does_not_exist, fabric2_db:delete(DbName2, [])),
+    ?assertMatch({ok, _}, fabric2_db:create(DbName2, [])),
+    {ok, Db2} = fabric2_db:open(DbName2, []),
+    ?assertMatch({ok, _}, fabric2_db:get_db_info(Db2)),
+    ok = config:set("couchdb", "enable_database_recovery", "true", false),
+    ?assertEqual(ok, fabric2_db:delete(DbName2, [])),
+    ?assertError(database_does_not_exist, fabric2_db:get_db_info(Db2)),
+
+    % db soft deleted and re-created
+    DbName3 = ?tempdb(),
+    ?assertError(database_does_not_exist, fabric2_db:delete(DbName3, [])),
+    ?assertMatch({ok, _}, fabric2_db:create(DbName3, [])),
+    {ok, Db3} = fabric2_db:open(DbName3, []),
+    ?assertMatch({ok, _}, fabric2_db:get_db_info(Db3)),
+    ok = config:set("couchdb", "enable_database_recovery", "true", false),
+    ?assertEqual(ok, fabric2_db:delete(DbName3, [])),
+    ?assertMatch({ok, _}, fabric2_db:create(DbName3, [])),
+    ?assertError(database_does_not_exist, fabric2_db:get_db_info(Db3)),
+
+    % db soft deleted and undeleted
+    DbName4 = ?tempdb(),
+    ?assertError(database_does_not_exist, fabric2_db:delete(DbName4, [])),
+    ?assertMatch({ok, _}, fabric2_db:create(DbName4, [])),
+    {ok, Db4} = fabric2_db:open(DbName4, []),
+    ?assertMatch({ok, _}, fabric2_db:get_db_info(Db4)),
+    ok = config:set("couchdb", "enable_database_recovery", "true", false),
+    ?assertEqual(ok, fabric2_db:delete(DbName4, [])),
+    {ok, [{Timestamp, _Info}]} = fabric2_db:deleted_dbs_info(DbName4, []),
+    ok = fabric2_db:undelete(DbName4, DbName4, Timestamp, []),
+    ?assertMatch({ok, _}, fabric2_db:get_db_info(Db4)),
+
+    % db hard deleted and re-created
+    DbName5 = ?tempdb(),
+    ?assertError(database_does_not_exist, fabric2_db:delete(DbName5, [])),
+    ?assertMatch({ok, _}, fabric2_db:create(DbName5, [])),
+    {ok, Db5} = fabric2_db:open(DbName5, []),
+    ?assertMatch({ok, _}, fabric2_db:get_db_info(Db5)),
+    ?assertEqual(ok, fabric2_db:delete(DbName5, [])),
+    ?assertMatch({ok, _}, fabric2_db:create(DbName5, [])),
+    ?assertError(database_does_not_exist, fabric2_db:get_db_info(Db5)).
 
 
 list_dbs(_) ->
