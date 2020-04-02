@@ -450,9 +450,10 @@ list_deleted_dbs(Tx, Callback, AccIn, Options0) ->
     end,
     LayerPrefix = get_dir(Tx),
     Prefix = erlfdb_tuple:pack({?DELETED_DBS}, LayerPrefix),
-    fold_range({tx, Tx}, Prefix, fun({K, _V}, Acc) ->
-        {DbName, _Timestamp} = erlfdb_tuple:unpack(K, Prefix),
-        Callback(DbName, Acc)
+    fold_range({tx, Tx}, Prefix, fun({DbKey, DbPrefix}, Acc) ->
+        {DbName, TimeStamp} = erlfdb_tuple:unpack(DbKey, Prefix),
+        InfoFuture = get_info_future(Tx, DbPrefix),
+        Callback(DbName, TimeStamp, InfoFuture, Acc)
     end, AccIn, Options).
 
 

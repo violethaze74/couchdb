@@ -181,7 +181,7 @@ deleted_dbs_get_req(#httpd{method='GET'}=Req) ->
 
     {ok, Resp} = chttpd:etag_respond(Req, Etag, fun() ->
         {ok, Resp} = chttpd:start_delayed_json_response(Req, 200, [{"ETag",Etag}]),
-        Callback = fun all_dbs_callback/2,
+        Callback = fun dbs_info_callback/2,
         Acc = #vacc{req=Req,resp=Resp},
         fabric2_db:list_deleted_dbs(Callback, Acc, Options)
     end),

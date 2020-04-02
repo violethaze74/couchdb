@@ -190,7 +190,8 @@ remove_deleted_db(_) ->
         fabric2_db:delete(BadDbName, [{deleted_at, Timestamp}])),
 
     ok = fabric2_db:delete(DbName, [{deleted_at, Timestamp}]),
-    DeletedDbs = fabric2_db:list_deleted_dbs(),
+    {ok, DeletedDbInfos} = fabric2_db:list_deleted_dbs(),
+    DeletedDbs = get_deleted_dbs(DeletedDbInfos),
     ?assert(not lists:member(DbName, DeletedDbs)).
 
 
@@ -243,6 +244,7 @@ old_db_handle(_) ->
     ?assertMatch({ok, _}, fabric2_db:create(DbName5, [])),
     {ok, Db5} = fabric2_db:open(DbName5, []),
     ?assertMatch({ok, _}, fabric2_db:get_db_info(Db5)),
+    ok = config:set("couchdb", "enable_database_recovery", "false", false),
     ?assertEqual(ok, fabric2_db:delete(DbName5, [])),
     ?assertMatch({ok, _}, fabric2_db:create(DbName5, [])),
     ?assertError(database_does_not_exist, fabric2_db:get_db_info(Db5)).
@@ -300,8 +302,9 @@ list_deleted_dbs(_) ->
 
     AllDbs3 = fabric2_db:list_dbs(),
     ?assert(not lists:member(DbName, AllDbs3)),
-    AllDbs4 = fabric2_db:list_deleted_dbs(),
-    ?assert(lists:member(DbName, AllDbs4)).
+    {ok, DeletedDbsInfo} = fabric2_db:list_deleted_dbs(),
+    DeletedDbs4 = get_deleted_dbs(DeletedDbsInfo),
+    ?assert(lists:member(DbName, DeletedDbs4)).
 
 
 list_deleted_dbs_user_fun(_) ->
@@ -311,10 +314,11 @@ list_deleted_dbs_user_fun(_) ->
 
     UserFun = fun(Row, Acc) -> {ok, [Row | Acc]} end,
     {ok, UserAcc} = fabric2_db:list_deleted_dbs(UserFun, [], []),
+    {ok, DeletedDbsInfo} = fabric2_db:list_deleted_dbs(),
 
-    Base = lists:foldl(fun(DbName0, Acc) ->
-        [{row, [{id, DbName0}]} | Acc]
-    end, [{meta, []}], fabric2_db:list_deleted_dbs()),
+    Base = lists:foldl(fun(DbInfo, Acc) ->
+        [{row, DbInfo} | Acc]
+    end, [{meta, []}], DeletedDbsInfo),
     Expect = lists:reverse(Base, [complete]),
 
     ?assertEqual(Expect, lists:reverse(UserAcc)).
@@ -554,3 +558,9 @@ is_db_info_member(DbName, [DbInfo | RestInfos]) ->
         _E ->
             is_db_info_member(DbName, RestInfos)
     end.
+
+get_deleted_dbs(DeletedDbInfos)  ->
+    lists:foldl(fun(DbInfo, Acc) ->
+        DbName = fabric2_util:get_value(key, DbInfo),
+        [DbName | Acc]
+    end, [], DeletedDbInfos).
