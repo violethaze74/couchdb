@@ -39,10 +39,11 @@
 
     encode_all_doc_key/1,
 
-    pmap/2,
-    pmap/3,
     iso8601_timestamp/0,
-    do_recovery/0
+    do_recovery/0,
+
+    pmap/2,
+    pmap/3
 ]).
 
 
@@ -305,6 +306,19 @@ encode_all_doc_key(L) when is_list(L) -> <<255>>;
 encode_all_doc_key({O}) when is_list(O) -> <<255>>.
 
 
+iso8601_timestamp() ->
+    Now = os:timestamp(),
+    {{Year, Month, Date}, {Hour, Minute, Second}} =
+        calendar:now_to_datetime(Now),
+    Format = "~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0BZ",
+    io_lib:format(Format, [Year, Month, Date, Hour, Minute, Second]).
+
+
+do_recovery() ->
+    config:get_boolean("couchdb",
+        "enable_database_recovery", false).
+
+
 pmap(Fun, Args) ->
     pmap(Fun, Args, []).
 
@@ -347,16 +361,3 @@ pmap_exec(Fun, Arg) ->
     end.
 
 -endif.
-
-
-iso8601_timestamp() ->
-    Now = os:timestamp(),
-    {{Year, Month, Date}, {Hour, Minute, Second}} =
-        calendar:now_to_datetime(Now),
-    Format = "~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0BZ",
-    io_lib:format(Format, [Year, Month, Date, Hour, Minute, Second]).
-
-
-do_recovery() ->
-    config:get_boolean("couchdb",
-        "enable_database_recovery", false).

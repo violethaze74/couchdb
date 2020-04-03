@@ -35,12 +35,12 @@ teardown(_Url) ->
 
 
 create_db(Url) ->
-    {ok, Status, _, _} = test_request:put(Url, [?CONTENT_JSON, ?AUTH], "{}"),
+    {ok, Status, _, _} = http(put, Url, ""),
     ?assert(Status =:= 201 orelse Status =:= 202).
 
 
 delete_db(Url) ->
-    {ok, 200, _, _} = test_request:delete(Url, [?AUTH]).
+    {ok, 200, _, _} = http(delete, Url).
 
 
 deleted_dbs_test_() ->
@@ -71,13 +71,10 @@ deleted_dbs_test_() ->
 should_return_error_for_unsupported_method(Url) ->
     ?_test(begin
         create_and_delete_db(Url),
-        {ok, Code, _, Body} = test_request:delete(Url ++ "/_deleted_dbs/",
-            [?CONTENT_JSON, ?AUTH]),
+        {ok, Code, _, Body} = http(delete, mk_url(Url)),
 
-        {ResultBody} = jiffy:decode(Body),
-        ?assertEqual(<<"method_not_allowed">>,
-                couch_util:get_value(<<"error">>, ResultBody)),
-        ?assertEqual(405, Code)
+        ?assertEqual(405, Code),
+        ?assertEqual(<<"method_not_allowed">>, get_json(<<"error">>, Body))
     end).
 
 
@@ -85,11 +82,10 @@ should_list_deleted_dbs(Url) ->
     ?_test(begin
         DbName1 = create_and_delete_db(Url),
         DbName2 = create_and_delete_db(Url),
-        {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs/",
-            [?CONTENT_JSON, ?AUTH]),
-        BodyJson = jiffy:decode(ResultBody),
-        DeletedDbs = get_deleted_dbs(BodyJson),
+        {ok, Code, _, Body} = http(get, mk_url(Url)),
+        DeletedDbs = get_db_names(Body),
 
+        ?assertEqual(200, Code),
         ?assertEqual(true, lists:member(DbName1, DeletedDbs)),
         ?assertEqual(true, lists:member(DbName2, DeletedDbs))
     end).
@@ -97,122 +93,100 @@ should_list_deleted_dbs(Url) ->
 
 should_list_deleted_dbs_info(Url) ->
     ?_test(begin
-        DbName = create_and_delete_db(Url),
-        {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs/" ++
-            DbName, [?CONTENT_JSON, ?AUTH]),
-        BodyJson = jiffy:decode(ResultBody),
+         DbName = create_and_delete_db(Url),
+         {ok, _, _, Body} = http(get, mk_url(Url, DbName)),
+         [{Props}] = jiffy:decode(Body),
 
-        {Db1Data} = lists:nth(1, BodyJson),
-        ?assertEqual(DbName,
-            couch_util:get_value(<<"key">>, Db1Data))
-    end).
+         ?assertEqual(DbName, couch_util:get_value(<<"key">>, Props))
+     end).
 
 
 should_undelete_db(Url) ->
     ?_test(begin
         DbName = create_and_delete_db(Url),
-        {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs/" ++
-            DbName, [?CONTENT_JSON, ?AUTH]),
-        BodyJson = jiffy:decode(ResultBody),
+        {ok, _, _, ResultBody} = http(get, mk_url(Url, DbName)),
+        [{Props}] = jiffy:decode(ResultBody),
+        TimeStamp = couch_util:get_value(<<"timestamp">>, Props),
 
-        {Db1Data} = lists:nth(1, BodyJson),
-        TimeStamp = couch_util:get_value(<<"timestamp">>, Db1Data),
+        ErlJSON = {[
+            {undelete, {[
+                {source, DbName},
+                {source_timestamp, TimeStamp}
+            ]}}
+        ]},
 
-        ErlJSON = {[{undelete, {[
-            {source, DbName},
-            {source_timestamp, TimeStamp}
-        ]}}]},
-        Body = jiffy:encode(ErlJSON),
+        {ok, Code1, _, _} = http(get, Url ++ DbName),
+        ?assertEqual(404, Code1),
 
-        {ok, Status, _, _} = test_request:post(Url ++ "/_deleted_dbs",
-            [?CONTENT_JSON, ?AUTH], Body),
-        ?assertEqual(200, Status),
+        {ok, Code2, _, _} = http(post, mk_url(Url), ErlJSON),
+        ?assertEqual(200, Code2),
 
-        {ok, Status2, _, _} = test_request:get(Url ++ DbName,
-            [?CONTENT_JSON, ?AUTH]),
-        ?assertEqual(200, Status2)
+        {ok, Code3, _, _} = http(get, Url ++ DbName),
+        ?assertEqual(200, Code3)
     end).
 
 
 should_remove_deleted_db(Url) ->
     ?_test(begin
         DbName = create_and_delete_db(Url),
-        {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs/" ++
-            DbName, [?CONTENT_JSON, ?AUTH]),
-        BodyJson = jiffy:decode(ResultBody),
+        {ok, _, _, Body1} = http(get, mk_url(Url, DbName)),
+        [{Props}] = jiffy:decode(Body1),
+        TimeStamp = couch_util:get_value(<<"timestamp">>, Props),
 
-        {Db1Data} = lists:nth(1, BodyJson),
-        TimeStamp = couch_util:get_value(<<"timestamp">>, Db1Data),
+        {ok, Code, _, _} = http(delete, mk_url(Url, DbName, TimeStamp)),
+        ?assertEqual(200, Code),
 
-        ErlJSON = {[{delete, {[
-            {source, DbName},
-            {source_timestamp, TimeStamp}
-        ]}}]},
-        Body = jiffy:encode(ErlJSON),
-
-        {ok, Status, _, _} = test_request:post(Url ++ "/_deleted_dbs",
-            [?CONTENT_JSON, ?AUTH], Body),
-        ?assertEqual(200, Status),
-
-        {ok, _, _, ResultBody2} = test_request:get(Url ++ "/_deleted_dbs/" ++
-            DbName, [?CONTENT_JSON, ?AUTH]),
-        ?assertEqual([], jiffy:decode(ResultBody2))
+        {ok, _, _, Body2} = http(get, mk_url(Url, DbName)),
+        ?assertEqual([], jiffy:decode(Body2))
     end).
 
 
 should_undelete_db_to_target_db(Url) ->
     ?_test(begin
         DbName = create_and_delete_db(Url),
-        {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs/" ++
-            DbName, [?CONTENT_JSON, ?AUTH]),
-        BodyJson = jiffy:decode(ResultBody),
-    
-        {Db1Data} = lists:nth(1, BodyJson),
-        TimeStamp = couch_util:get_value(<<"timestamp">>, Db1Data),
+        {ok, _, _, Body} = http(get, mk_url(Url, DbName)),
+        [{Props}] = jiffy:decode(Body),
+        TimeStamp = couch_util:get_value(<<"timestamp">>, Props),
 
         NewDbName = ?tempdb(),
-        ErlJSON = {[{undelete, {[
-            {source, DbName},
-            {source_timestamp, TimeStamp},
-            {target, NewDbName}
-        ]}}]},
-        Body = jiffy:encode(ErlJSON),
-    
-        {ok, RC2, _, _} = test_request:post(Url ++ "/_deleted_dbs",
-            [?CONTENT_JSON, ?AUTH], Body),
-        ?assertEqual(200, RC2),
-    
-        {ok, RC3, _, _} = test_request:get(Url ++ NewDbName,
-            [?CONTENT_JSON, ?AUTH]),
-        ?assertEqual(200, RC3)
+        ErlJSON = {[
+            {undelete, {[
+                {source, DbName},
+                {source_timestamp, TimeStamp},
+                {target, NewDbName}
+            ]}}
+        ]},
+
+        {ok, Code1, _, _} = http(get, Url ++ NewDbName),
+        ?assertEqual(404, Code1),
+
+        {ok, Code2, _, _} = http(post, mk_url(Url), ErlJSON),
+        ?assertEqual(200, Code2),
+
+        {ok, Code3, _, _} = http(get, Url ++ NewDbName),
+        ?assertEqual(200, Code3)
     end).
 
 
 should_not_undelete_db_to_existing_db(Url) ->
     ?_test(begin
         DbName = create_and_delete_db(Url),
-        {ok, _, _, ResultBody} = test_request:get(Url ++ "/_deleted_dbs/" ++
-            DbName, [?CONTENT_JSON, ?AUTH]),
-        BodyJson = jiffy:decode(ResultBody),
-
-        {Db1Data} = lists:nth(1, BodyJson),
-        TimeStamp = couch_util:get_value(<<"timestamp">>, Db1Data),
+        {ok, _, _, ResultBody} = http(get, mk_url(Url, DbName)),
+        [{Props}] = jiffy:decode(ResultBody),
+        TimeStamp = couch_util:get_value(<<"timestamp">>, Props),
 
         NewDbName = ?tempdb(),
         create_db(Url ++ NewDbName),
-        ErlJSON = {[{undelete, {[
-            {source, DbName},
-            {source_timestamp, TimeStamp},
-            {target, NewDbName}
-        ]}}]},
-        Body = jiffy:encode(ErlJSON),
-
-        {ok, RC, _, ResultBody2} = test_request:post(Url ++ "/_deleted_dbs",
-            [?CONTENT_JSON, ?AUTH], Body),
-        {JsonBody} = jiffy:decode(ResultBody2),
-        ?assertEqual(<<"file_exists">>,
-                couch_util:get_value(<<"error">>, JsonBody)),
-        ?assertEqual(412, RC)
+        ErlJSON = {[
+            {undelete, {[
+                {source, DbName},
+                {source_timestamp, TimeStamp},
+                {target, NewDbName}
+            ]}}
+        ]},
+        {ok, Code2, _, ResultBody2} = http(post, mk_url(Url), ErlJSON),
+        ?assertEqual(412, Code2),
+        ?assertEqual(<<"file_exists">>, get_json(<<"error">>, ResultBody2))
     end).
 
 
@@ -225,8 +199,37 @@ create_and_delete_db(BaseUrl) ->
     DbName.
 
 
-get_deleted_dbs(DeletedDbInfos)  ->
-    lists:foldl(fun({DbInfo}, Acc) ->
+http(Verb, Url) ->
+    Headers = [?CONTENT_JSON, ?AUTH],
+    test_request:Verb(Url, Headers).
+
+
+http(Verb, Url, Body) ->
+    Headers = [?CONTENT_JSON, ?AUTH],
+    test_request:Verb(Url, Headers, jiffy:encode(Body)).
+
+
+mk_url(Url) ->
+    Url ++ "/_deleted_dbs".
+
+
+mk_url(Url, DbName) ->
+    Url ++ "/_deleted_dbs?key=\"" ++ ?b2l(DbName) ++ "\"".
+
+
+mk_url(Url, DbName, TimeStamp) ->
+    Url ++ "/_deleted_dbs/" ++ ?b2l(DbName) ++ "?timestamp=\"" ++
+        ?b2l(TimeStamp) ++ "\"".
+
+
+get_json(Key, Body) ->
+    {Props} = jiffy:decode(Body),
+    couch_util:get_value(Key, Props).
+
+
+get_db_names(Body) ->
+    RevDbNames = lists:foldl(fun({DbInfo}, Acc) ->
         DbName = couch_util:get_value(<<"key">>, DbInfo),
         [DbName | Acc]
-    end, [], DeletedDbInfos).
+    end, [], jiffy:decode(Body)),
+    lists:reverse(RevDbNames).

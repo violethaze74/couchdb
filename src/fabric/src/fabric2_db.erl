@@ -227,13 +227,6 @@ delete(DbName, Options) ->
     end.
 
 
-deleted_dbs_info(DbName, Options) ->
-    Result = fabric2_fdb:transactional(DbName, Options, fun(TxDb) ->
-        fabric2_fdb:deleted_dbs_info(TxDb)
-    end),
-    {ok, lists:reverse(Result)}.
-
-
 undelete(DbName, TgtDbName, TimeStamp, Options) ->
     case validate_dbname(TgtDbName) of
         ok ->
@@ -359,6 +352,13 @@ list_dbs_info(UserFun, UserAcc0, Options) ->
             {ok, FinalUserAcc}
         end
     end).
+
+
+deleted_dbs_info(DbName, Options) ->
+    Result = fabric2_fdb:transactional(DbName, Options, fun(TxDb) ->
+        fabric2_fdb:deleted_dbs_info(TxDb)
+    end),
+    {ok, lists:reverse(Result)}.
 
 
 is_admin(Db, {SecProps}) when is_list(SecProps) ->
@@ -1101,27 +1101,13 @@ drain_all_info_futures(FutureQ, UserFun, Acc) ->
             Acc
     end.
 
+
 make_deleted_dbs_info(DbName, TimeStamp, Props) ->
-    BaseProps = [
+    [
         {key, DbName},
         {timestamp, TimeStamp},
-        {value, {[
-            {cluster, {[{n, 0}, {q, 0}, {r, 0}, {w, 0}]}},
-            {compact_running, false},
-            {data_size, 0},
-            {db_name, DbName},
-            {timestamp, TimeStamp},
-            {disk_format_version, 0},
-            {disk_size, 0},
-            {instance_start_time, <<"0">>},
-            {purge_seq, 0}
-            ]}
-        }
-    ],
-
-    lists:foldl(fun({Key, Val}, Acc) ->
-        lists:keystore(Key, 1, Acc, {Key, Val})
-    end, BaseProps, Props).
+        {value, {Props}}
+    ].
 
 
 drain_deleted_dbs_futures(FutureQ, Count, _UserFun, Acc) when Count < 100 ->

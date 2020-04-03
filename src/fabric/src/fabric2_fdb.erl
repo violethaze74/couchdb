@@ -383,7 +383,7 @@ undelete(#{} = Db0, TgtDbName, TimeStamp) ->
             DeleteDbKey = erlfdb_tuple:pack(DeletedDbTupleKey, LayerPrefix),
             case erlfdb:wait(erlfdb:get(Tx, DeleteDbKey)) of
                 not_found ->
-                    erlang:error({not_found});
+                    not_found;
                 DbPrefix ->
                     erlfdb:set(Tx, DbKey, DbPrefix),
                     erlfdb:clear(Tx, DeleteDbKey),
@@ -411,16 +411,16 @@ remove_deleted_db(#{} = Db0, TimeStamp) ->
     DeletedDbKey = erlfdb_tuple:pack(DeletedDbTupleKey, LayerPrefix),
     case erlfdb:wait(erlfdb:get(Tx, DeletedDbKey)) of
         not_found ->
-            erlang:error({not_found});
+            not_found;
         DbPrefix ->
             erlfdb:clear(Tx, DeletedDbKey),
             erlfdb:clear_range_startswith(Tx, DbPrefix),
             bump_db_version(#{
                 tx => Tx,
                 db_prefix => DbPrefix
-            })
-    end,
-    ok.
+            }),
+            ok
+    end.
 
 
 get_dir(Tx) ->
@@ -1277,11 +1277,11 @@ soft_delete_db(Db) ->
         not_found ->
             erlfdb:set(Tx, DeletedDbKey, DbPrefix),
             erlfdb:clear(Tx, DbKey),
-            bump_db_version(Db);
+            bump_db_version(Db),
+            ok;
         _Val ->
-            erlang:error({deleted_database_exists, DbName})
-    end,
-    ok.
+            {deletion_frequency_exceeded, DbName}
+    end.
 
 
 hard_delete_db(Db) ->

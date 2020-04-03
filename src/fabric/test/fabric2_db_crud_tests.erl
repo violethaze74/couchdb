@@ -160,9 +160,9 @@ undelete_db(_) ->
 
     {ok, [{Timestamp, _Info}]} = fabric2_db:deleted_dbs_info(DbName, []),
     OldTS = <<"2020-01-01T12:00:00Z">>,
-    ?assertError({not_found}, fabric2_db:undelete(DbName, DbName, OldTS, [])),
+    ?assertEqual(not_found, fabric2_db:undelete(DbName, DbName, OldTS, [])),
     BadDbName = <<"bad_dbname">>,
-    ?assertError({not_found},
+    ?assertEqual(not_found,
         fabric2_db:undelete(BadDbName, BadDbName, Timestamp, [])),
 
     ok = fabric2_db:undelete(DbName, DbName, Timestamp, []),
@@ -183,10 +183,10 @@ remove_deleted_db(_) ->
 
     {ok, [{Timestamp, _Info}]} = fabric2_db:deleted_dbs_info(DbName, []),
     OldTS = <<"2020-01-01T12:00:00Z">>,
-    ?assertError({not_found},
+    ?assertEqual(not_found,
         fabric2_db:delete(DbName, [{deleted_at, OldTS}])),
     BadDbName = <<"bad_dbname">>,
-    ?assertError({not_found},
+    ?assertEqual(not_found,
         fabric2_db:delete(BadDbName, [{deleted_at, Timestamp}])),
 
     ok = fabric2_db:delete(DbName, [{deleted_at, Timestamp}]),

@@ -60,13 +60,13 @@ handler_info('GET', [<<"_all_dbs">>], _) ->
     {'all_dbs.read', #{}};
 
 handler_info('GET', [<<"_deleted_dbs">>], _) ->
-    {'deleted_dbs.read', #{}};
+    {'account-deleted-dbs.read', #{}};
 
 handler_info('POST', [<<"_deleted_dbs">>], _) ->
-    {'deleted_dbs.write', #{}};
+    {'account-deleted-dbs.undelete', #{}};
 
-handler_info('GET', [<<"_deleted_dbs">>, Db], _) ->
-    {'deleted_dbs.db.read', #{'db.name' => Db}};
+handler_info('DELETE', [<<"_deleted_dbs">>, Db], _) ->
+    {'account-deleted-dbs.delete', #{'db.name' => Db}};
 
 handler_info('POST', [<<"_dbs_info">>], _) ->
     {'dbs_info.read', #{}};
