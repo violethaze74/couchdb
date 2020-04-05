@@ -164,36 +164,7 @@ all_dbs_callback({error, Reason}, #vacc{resp=Resp0}=Acc) ->
     {ok, Acc#vacc{resp=Resp1}}.
 
 handle_dbs_info_req(#httpd{method = 'GET'} = Req) ->
-    ok = chttpd:verify_is_server_admin(Req),
-
-    #mrargs{
-        start_key = StartKey,
-        end_key = EndKey,
-        direction = Dir,
-        limit = Limit,
-        skip = Skip
-    } = couch_mrview_http:parse_params(Req, undefined),
-
-    Options = [
-        {start_key, StartKey},
-        {end_key, EndKey},
-        {dir, Dir},
-        {limit, Limit},
-        {skip, Skip}
-    ],
-
-    % TODO: Figure out if we can't calculate a valid
-    % ETag for this request. \xFFmetadataVersion won't
-    % work as we don't bump versions on size changes
-
-    {ok, Resp} = chttpd:start_delayed_json_response(Req, 200, []),
-    Callback = fun dbs_info_callback/2,
-    Acc = #vacc{req = Req, resp = Resp},
-    {ok, Resp} = fabric2_db:list_dbs_info(Callback, Acc, Options),
-    case is_record(Resp, vacc) of
-        true -> {ok, Resp#vacc.resp};
-        _ -> {ok, Resp}
-    end;
+    send_dbs_info(Req, list_db_infos);
 handle_dbs_info_req(#httpd{method='POST', user_ctx=UserCtx}=Req) ->
     chttpd:validate_ctype(Req, "application/json"),
     Props = chttpd:json_body_obj(Req),
@@ -228,7 +199,7 @@ handle_dbs_info_req(Req) ->
     send_method_not_allowed(Req, "GET,HEAD,POST").
 
 handle_deleted_dbs_req(#httpd{method='GET', path_parts=[_]}=Req) ->
-    deleted_dbs_get_req(Req);
+    send_db_infos(Req, list_deleted_db_infos);
 handle_deleted_dbs_req(#httpd{method='POST', path_parts=[_]}=Req) ->
     deleted_dbs_post_req(Req);
 handle_deleted_dbs_req(#httpd{path_parts = PP}=Req) when length(PP) == 1 ->
@@ -240,50 +211,54 @@ handle_deleted_dbs_req(#httpd{path_parts = PP}=Req) when length(PP) == 2 ->
 handle_deleted_dbs_req(Req) ->
     chttpd:send_error(Req, not_found).
 
-deleted_dbs_get_req(Req) ->
-    couch_httpd:verify_is_server_admin(Req),
-    case ?JSON_DECODE(couch_httpd:qs_value(Req, "key", "null")) of
-        null ->
-            deleted_dbs_info_req(Req);
-        DbName ->
-            deleted_db_info_req(Req, DbName)
-    end.
+send_db_infos(Req, ListFunctionName) ->
+    ok = chttpd:verify_is_server_admin(Req),
 
-deleted_dbs_info_req(#httpd{user_ctx=Ctx}=Req) ->
-    % Eventually the Etag for this request will be derived
-    % from the \xFFmetadataVersion key in fdb
-    Etag = <<"foo">>,
+    #mrargs{
+        start_key = StartKey,
+        end_key = EndKey,
+        direction = Dir,
+        limit = Limit,
+        skip = Skip
+    } = couch_mrview_http:parse_params(Req, undefined),
 
-    {ok, Resp} = chttpd:etag_respond(Req, Etag, fun() ->
-        {ok, Resp} = chttpd:start_delayed_json_response(Req, 200, [{"ETag",Etag}]),
-        Callback = fun dbs_info_callback/2,
-        Acc = #vacc{req=Req,resp=Resp},
-        fabric2_db:list_deleted_dbs(Callback, Acc, [{user_ctx, Ctx}])
-    end),
+    Options = [
+        {start_key, StartKey},
+        {end_key, EndKey},
+        {dir, Dir},
+        {limit, Limit},
+        {skip, Skip}
+    ],
+
+    % TODO: Figure out if we can't calculate a valid
+    % ETag for this request. \xFFmetadataVersion won't
+    % work as we don't bump versions on size changes
+
+    {ok, Resp} = chttpd:start_delayed_json_response(Req, 200, []),
+    Callback = fun dbs_info_callback/2,
+    Acc = #vacc{req = Req, resp = Resp},
+    {ok, Resp} = fabric2_db:ListFunctionName(Callback, Acc, Options),
     case is_record(Resp, vacc) of
         true -> {ok, Resp#vacc.resp};
         _ -> {ok, Resp}
     end.
 
-deleted_db_info_req(#httpd{user_ctx=Ctx}=Req, DbName) ->
-    case fabric2_db:deleted_dbs_info(DbName, [{user_ctx, Ctx}]) of
-        {ok, Result} ->
-            {ok, Resp} = chttpd:start_json_response(Req, 200),
-            send_chunk(Resp, "["),
-            lists:foldl(fun({Timestamp, Info}, AccSeparator) ->
-                Json = ?JSON_ENCODE({[
-                    {key, DbName},
-                    {timestamp, Timestamp},
-                    {value, {Info}}
-                ]}),
-                send_chunk(Resp, AccSeparator ++ Json),
-                "," % AccSeparator now has a comma
-            end, "", Result),
-            send_chunk(Resp, "]"),
-            chttpd:end_json_response(Resp);
-        Error ->
-            throw(Error)
-    end.
+dbs_info_callback({meta, _Meta}, #vacc{resp = Resp0} = Acc) ->
+    {ok, Resp1} = chttpd:send_delayed_chunk(Resp0, "["),
+    {ok, Acc#vacc{resp = Resp1}};
+dbs_info_callback({row, Props}, #vacc{resp = Resp0} = Acc) ->
+    Prepend = couch_mrview_http:prepend_val(Acc),
+    Chunk = [Prepend, ?JSON_ENCODE({Props})],
+    {ok, Resp1} = chttpd:send_delayed_chunk(Resp0, Chunk),
+    {ok, Acc#vacc{prepend = ",", resp = Resp1}};
+dbs_info_callback(complete, #vacc{resp = Resp0} = Acc) ->
+    {ok, Resp1} = chttpd:send_delayed_chunk(Resp0, "]"),
+    {ok, Resp2} = chttpd:end_delayed_json_response(Resp1),
+    {ok, Acc#vacc{resp = Resp2}};
+dbs_info_callback({error, Reason}, #vacc{resp = Resp0} = Acc) ->
+    {ok, Resp1} = chttpd:send_delayed_error(Resp0, Reason),
+    {ok, Acc#vacc{resp = Resp1}}.
+
 
 deleted_dbs_post_req(#httpd{user_ctx=Ctx}=Req) ->
     couch_httpd:verify_is_server_admin(Req),
@@ -341,22 +316,6 @@ remove_deleted_req(#httpd{user_ctx=Ctx}=Req, DbName) ->
         Error ->
             throw(Error)
     end.
-
-dbs_info_callback({meta, _Meta}, #vacc{resp = Resp0} = Acc) ->
-    {ok, Resp1} = chttpd:send_delayed_chunk(Resp0, "["),
-    {ok, Acc#vacc{resp = Resp1}};
-dbs_info_callback({row, Props}, #vacc{resp = Resp0} = Acc) ->
-    Prepend = couch_mrview_http:prepend_val(Acc),
-    Chunk = [Prepend, ?JSON_ENCODE({Props})],
-    {ok, Resp1} = chttpd:send_delayed_chunk(Resp0, Chunk),
-    {ok, Acc#vacc{prepend = ",", resp = Resp1}};
-dbs_info_callback(complete, #vacc{resp = Resp0} = Acc) ->
-    {ok, Resp1} = chttpd:send_delayed_chunk(Resp0, "]"),
-    {ok, Resp2} = chttpd:end_delayed_json_response(Resp1),
-    {ok, Acc#vacc{resp = Resp2}};
-dbs_info_callback({error, Reason}, #vacc{resp = Resp0} = Acc) ->
-    {ok, Resp1} = chttpd:send_delayed_error(Resp0, Reason),
-    {ok, Acc#vacc{resp = Resp1}}.
 
 handle_task_status_req(#httpd{method='GET'}=Req) ->
     ok = chttpd:verify_is_server_admin(Req),
