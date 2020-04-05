@@ -201,15 +201,58 @@ handle_dbs_info_req(Req) ->
 handle_deleted_dbs_req(#httpd{method='GET', path_parts=[_]}=Req) ->
     send_db_infos(Req, list_deleted_db_infos);
 handle_deleted_dbs_req(#httpd{method='POST', path_parts=[_]}=Req) ->
-    deleted_dbs_post_req(Req);
+    couch_httpd:verify_is_server_admin(Req),
+    chttpd:validate_ctype(Req, "application/json"),
+    GetJSON = fun(Key, Props, Default) ->
+        case couch_util:get_value(Key, Props) of
+            undefined when Default == error ->
+                Fmt = "POST body must include `~s` parameter.",
+                Msg = io_lib:format(Fmt, [Key]),
+                throw({bad_request, iolist_to_binary(Msg)});
+            undefined ->
+                Default;
+            Value ->
+                Value
+        end
+    end,
+    {BodyProps} = chttpd:json_body_obj(Req),
+    {UndeleteProps} = GetJSON(<<"undelete">>, BodyProps, error),
+    DbName = GetJSON(<<"source">>, UndeleteProps, error),
+    TimeStamp = GetJSON(<<"timetsamp">>, UndeleteProps, error),
+    TgtDbName = GetJSON(<<"target">>, UndeleteProps, DbName),
+    case fabric2_db:undelete(DbName, TgtDbName, TimeStamp, [{user_ctx, Ctx}]) of
+        ok ->
+            send_json(Req, 200, {[{ok, true}]});
+        {error, file_exists} ->
+            chttpd:send_error(Req, file_exists);
+        {error, not_found} ->
+            chttpd:send_error(Req, not_found);
+        Error ->
+            throw(Error)
+    end;
 handle_deleted_dbs_req(#httpd{path_parts = PP}=Req) when length(PP) == 1 ->
     send_method_not_allowed(Req, "GET,HEAD,POST");
 handle_deleted_dbs_req(#httpd{method='DELETE', path_parts=[_, DbName]}=Req) ->
-    remove_deleted_req(Req, DbName);
+    couch_httpd:verify_is_server_admin(Req),
+    TS = case ?JSON_DECODE(couch_httpd:qs_value(Req, "timestamp", "null")) of
+        null ->
+            throw({bad_request, "`timestamp` parameter is not provided."});
+        TS0 ->
+            TS0
+    end,
+    case fabric2_db:delete(DbName, [{user_ctx, Ctx}, {deleted_at, TS}]) of
+        ok ->
+            send_json(Req, 200, {[{ok, true}]});
+        {error, not_found} ->
+            chttpd:send_error(Req, not_found);
+        Error ->
+            throw(Error)
+    end;
 handle_deleted_dbs_req(#httpd{path_parts = PP}=Req) when length(PP) == 2 ->
     send_method_not_allowed(Req, "HEAD,DELETE");
 handle_deleted_dbs_req(Req) ->
     chttpd:send_error(Req, not_found).
+
 
 send_db_infos(Req, ListFunctionName) ->
     ok = chttpd:verify_is_server_admin(Req),
@@ -258,64 +301,6 @@ dbs_info_callback(complete, #vacc{resp = Resp0} = Acc) ->
 dbs_info_callback({error, Reason}, #vacc{resp = Resp0} = Acc) ->
     {ok, Resp1} = chttpd:send_delayed_error(Resp0, Reason),
     {ok, Acc#vacc{resp = Resp1}}.
-
-
-deleted_dbs_post_req(#httpd{user_ctx=Ctx}=Req) ->
-    couch_httpd:verify_is_server_admin(Req),
-    chttpd:validate_ctype(Req, "application/json"),
-    {JsonProps} = chttpd:json_body_obj(Req),
-    {UndeleteJson} =  case couch_util:get_value(<<"undelete">>, JsonProps) of
-        undefined ->
-            throw({bad_request,
-                <<"POST body must include `undeleted` parameter.">>});
-        UndeleteJson0 ->
-            UndeleteJson0
-    end,
-    DbName = case couch_util:get_value(<<"source">>, UndeleteJson) of
-        undefined ->
-            throw({bad_request,
-                <<"POST body must include `source` parameter.">>});
-        DbName0 ->
-            DbName0
-    end,
-    TimeStamp = case couch_util:get_value(<<"source_timestamp">>, UndeleteJson) of
-        undefined ->
-            throw({bad_request,
-                <<"POST body must include `source_timestamp` parameter.">>});
-        TimeStamp0 ->
-            TimeStamp0
-    end,
-    TgtDbName = case couch_util:get_value(<<"target">>, UndeleteJson) of
-        undefined ->  DbName;
-        TgtDbName0 -> TgtDbName0
-    end,
-    case fabric2_db:undelete(DbName, TgtDbName, TimeStamp, [{user_ctx, Ctx}]) of
-        ok ->
-            send_json(Req, 200, {[{ok, true}]});
-        {error, file_exists} ->
-            chttpd:send_error(Req, file_exists);
-        {error, not_found} ->
-            chttpd:send_error(Req, not_found);
-        Error ->
-            throw(Error)
-    end.
-
-remove_deleted_req(#httpd{user_ctx=Ctx}=Req, DbName) ->
-    couch_httpd:verify_is_server_admin(Req),
-    TS = case ?JSON_DECODE(couch_httpd:qs_value(Req, "timestamp", "null")) of
-        null ->
-            throw({bad_request, "`timestamp` parameter is not provided."});
-        TS0 ->
-           TS0
-    end,
-    case fabric2_db:delete(DbName, [{user_ctx, Ctx}, {deleted_at, TS}]) of
-        ok ->
-            send_json(Req, 200, {[{ok, true}]});
-        {error, not_found} ->
-            chttpd:send_error(Req, not_found);
-        Error ->
-            throw(Error)
-    end.
 
 handle_task_status_req(#httpd{method='GET'}=Req) ->
     ok = chttpd:verify_is_server_admin(Req),
