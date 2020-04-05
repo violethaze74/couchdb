@@ -30,10 +30,7 @@
 
     list_dbs/4,
     list_dbs_info/4,
-
-    list_deleted_dbs/4,
-
-    deleted_dbs_info/1,
+    list_deleted_dbs_info/4,
 
     get_info/1,
     get_info_future/2,
@@ -443,20 +440,6 @@ list_dbs(Tx, Callback, AccIn, Options0) ->
     end, AccIn, Options).
 
 
-list_deleted_dbs(Tx, Callback, AccIn, Options0) ->
-    Options = case fabric2_util:get_value(restart_tx, Options0) of
-        undefined -> [{restart_tx, true} | Options0];
-        _AlreadySet -> Options0
-    end,
-    LayerPrefix = get_dir(Tx),
-    Prefix = erlfdb_tuple:pack({?DELETED_DBS}, LayerPrefix),
-    fold_range({tx, Tx}, Prefix, fun({DbKey, DbPrefix}, Acc) ->
-        {DbName, TimeStamp} = erlfdb_tuple:unpack(DbKey, Prefix),
-        InfoFuture = get_info_future(Tx, DbPrefix),
-        Callback(DbName, TimeStamp, InfoFuture, Acc)
-    end, AccIn, Options).
-
-
 list_dbs_info(Tx, Callback, AccIn, Options0) ->
     Options = case fabric2_util:get_value(restart_tx, Options0) of
         undefined -> [{restart_tx, true} | Options0];
@@ -471,21 +454,18 @@ list_dbs_info(Tx, Callback, AccIn, Options0) ->
     end, AccIn, Options).
 
 
-deleted_dbs_info(#{} = Db0) ->
-    #{
-        name := DbName,
-        tx := Tx,
-        layer_prefix := LayerPrefix
-    } = ensure_current(Db0, false),
-
-    DeletedDbKey =  erlfdb_tuple:pack({?DELETED_DBS, DbName}, LayerPrefix),
-    DeletedDbs = erlfdb:wait(erlfdb:get_range_startswith(Tx, DeletedDbKey)),
-    lists:foldl(fun({DbKey, DbPrefix}, Acc) ->
-        DBInfo = get_info_wait(get_info_future(Tx, DbPrefix)),
-        {?DELETED_DBS, DbName, DeletedTS} =
-            erlfdb_tuple:unpack(DbKey, LayerPrefix),
-        [{DeletedTS, DBInfo}| Acc]
-    end, [], DeletedDbs).
+list_deleted_db_infos(Tx, Callback, AccIn, Options0) ->
+    Options = case fabric2_util:get_value(restart_tx, Options0) of
+        undefined -> [{restart_tx, true} | Options0];
+        _AlreadySet -> Options0
+    end,
+    LayerPrefix = get_dir(Tx),
+    Prefix = erlfdb_tuple:pack({?DELETED_DBS}, LayerPrefix),
+    fold_range({tx, Tx}, Prefix, fun({DbKey, DbPrefix}, Acc) ->
+        {DbName, TimeStamp} = erlfdb_tuple:unpack(DbKey, Prefix),
+        InfoFuture = get_info_future(Tx, DbPrefix),
+        Callback(DbName, TimeStamp, InfoFuture, Acc)
+    end, AccIn, Options).
 
 
 get_info(#{} = Db) ->
