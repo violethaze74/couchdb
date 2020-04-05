@@ -22,9 +22,9 @@
     open/2,
     ensure_current/1,
     delete/1,
-    exists/1,
     undelete/3,
     remove_deleted_db/2,
+    exists/1,
 
     get_dir/1,
 
@@ -348,19 +348,6 @@ delete(#{} = Db) ->
     end.
 
 
-exists(#{name := DbName} = Db) when is_binary(DbName) ->
-    #{
-        tx := Tx,
-        layer_prefix := LayerPrefix
-    } = ensure_current(Db, false),
-
-    DbKey = erlfdb_tuple:pack({?ALL_DBS, DbName}, LayerPrefix),
-    case erlfdb:wait(erlfdb:get(Tx, DbKey)) of
-        Bin when is_binary(Bin) -> true;
-        not_found -> false
-    end.
-
-
 undelete(#{} = Db0, TgtDbName, TimeStamp) ->
     #{
         name := DbName,
@@ -417,6 +404,19 @@ remove_deleted_db(#{} = Db0, TimeStamp) ->
                 db_prefix => DbPrefix
             }),
             ok
+    end.
+
+
+exists(#{name := DbName} = Db) when is_binary(DbName) ->
+    #{
+        tx := Tx,
+        layer_prefix := LayerPrefix
+    } = ensure_current(Db, false),
+
+    DbKey = erlfdb_tuple:pack({?ALL_DBS, DbName}, LayerPrefix),
+    case erlfdb:wait(erlfdb:get(Tx, DbKey)) of
+        Bin when is_binary(Bin) -> true;
+        not_found -> false
     end.
 
 
