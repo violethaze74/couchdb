@@ -70,7 +70,7 @@ get_creation_vs(TxDb, Sig) ->
         tx := Tx
     } = TxDb,
     Key = creation_vs_key(TxDb, Sig),
-    case erlfdb:wait(erlfdb:get(Tx, Key)) of
+    case aegis:decrypt(TxDb, Key, erlfdb:wait(erlfdb:get(Tx, Key))) of
         not_found ->
             not_found;
         EK ->
@@ -87,7 +87,7 @@ get_build_status(TxDb, #mrst{sig = Sig}) ->
         tx := Tx
     } = TxDb,
     Key = build_status_key(TxDb, Sig),
-    erlfdb:wait(erlfdb:get(Tx, Key)).
+    aegis:decrypt(TxDb, Key, erlfdb:wait(erlfdb:get(Tx, Key))).
 
 
 set_build_status(TxDb, #mrst{sig = Sig}, State) ->
@@ -96,7 +96,7 @@ set_build_status(TxDb, #mrst{sig = Sig}, State) ->
     } = TxDb,
 
     Key = build_status_key(TxDb, Sig),
-    ok = erlfdb:set(Tx, Key, State).
+    ok = erlfdb:set(Tx, Key, aegis:encrypt(Db, Key, State)).
 
 
 % View Build Sequence Access
@@ -109,7 +109,8 @@ get_update_seq(TxDb, #mrst{sig = Sig}) ->
         db_prefix := DbPrefix
     } = TxDb,
 
-    case erlfdb:wait(erlfdb:get(Tx, seq_key(DbPrefix, Sig))) of
+    Key = seq_key(DbPrefix, Sig),
+    case aegis:decrypt(TxDb, Key, erlfdb:wait(erlfdb:get(Tx, Key))) of
         not_found -> <<>>;
         UpdateSeq -> UpdateSeq
     end.
@@ -120,7 +121,8 @@ set_update_seq(TxDb, Sig, Seq) ->
         tx := Tx,
         db_prefix := DbPrefix
     } = TxDb,
-    ok = erlfdb:set(Tx, seq_key(DbPrefix, Sig), Seq).
+    Key = seq_key(DbPrefix, Sig),
+    ok = erlfdb:set(Tx, Key, aegis:encrypt(TxDb, Key, Seq)).
 
 
 get_row_count(TxDb, #mrst{sig = Sig}, ViewId) ->
@@ -158,7 +160,7 @@ fold_map_idx(TxDb, Sig, ViewId, Options, Callback, Acc0) ->
         callback => Callback,
         acc => Acc0
         },
-    Fun = fun fold_fwd/2,
+    Fun = aegis:wrap_fold_fun(TxDb, fun fold_fwd/2),
 
     #{
         acc := Acc1
@@ -283,7 +285,7 @@ update_id_idx(TxDb, Sig, ViewId, DocId, NewRows, KVSize) ->
 
     Key = id_idx_key(DbPrefix, Sig, DocId, ViewId),
     Val = couch_views_encoding:encode([length(NewRows), KVSize, Unique]),
-    ok = erlfdb:set(Tx, Key, Val).
+    ok = erlfdb:set(Tx, Key, aegis:encrypt(TxDb, Key, Val)).
 
 
 update_map_idx(TxDb, Sig, ViewId, DocId, ExistingKeys, NewRows) ->
@@ -303,7 +305,7 @@ update_map_idx(TxDb, Sig, ViewId, DocId, ExistingKeys, NewRows) ->
     lists:foreach(fun({DupeId, Key1, Key2, EV}) ->
         KK = map_idx_key(MapIdxPrefix, {Key1, DocId}, DupeId),
         Val = erlfdb_tuple:pack({Key2, EV}),
-        ok = erlfdb:set(Tx, KK, Val)
+        ok = erlfdb:set(Tx, KK, aegis:ecnrypt(TxDb, KK, Val))
     end, KVsToAdd).
 
 
@@ -318,7 +320,7 @@ get_view_keys(TxDb, Sig, DocId) ->
                 erlfdb_tuple:unpack(K, DbPrefix),
         [TotalKeys, TotalSize, UniqueKeys] = couch_views_encoding:decode(V),
         {ViewId, TotalKeys, TotalSize, UniqueKeys}
-    end, erlfdb:get_range(Tx, Start, End, [])).
+    end, aegis:decrypt(TxDb, erlfdb:get_range(Tx, Start, End, []))).
 
 
 update_row_count(TxDb, Sig, ViewId, Increment) ->
