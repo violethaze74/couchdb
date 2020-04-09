@@ -42,6 +42,21 @@
 -define(DB_SEARCH, 27).
 
 
+-ifdef(CRYPTO_MODULE).
+-define(?ENCRYPT_CREATE(Db), ?CRYPTO_MODULE:create(Db)).
+-define(?ENCRYPT_OPEN(Db), ?CRYPTO_MODULE:open(Db)).
+-define(?ENCRYPT(Db, Key, Value), ?CRYPTO_MODULE:encrypt(Db, Key, Value)).
+-define(?DECRYPT(Db, Key, Value), ?CRYPTO_MODULE:decrupt(Db, Key, Value)).
+-define(?DECRYPT(Db, Object), ?CRYPTO_MODULE:decrypt(Db, Object)).
+-else.
+-define(?ENCRYPT_CREATE(Db), Db).
+-define(?ENCRYPT_OPEN(Db), Db).
+-define(?ENCRYPT(Db, Key, Value), Value).
+-define(?DECRYPT(Db, Key, Value), Value).
+-define(?DECRYPT(Db, Object), Object).
+-endif.
+
+
 % Versions
 
 % 0 - Initial implementation
