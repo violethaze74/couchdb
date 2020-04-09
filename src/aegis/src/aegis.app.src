@@ -10,20 +10,19 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
-{application, aegis,
- [{description, "If it's good enough for Zeus, it's good enough for CouchDB"},
-  {vsn, git},
-  {registered, []},
-  {applications,
-   [kernel,
-    stdlib,
-    crypto,
-    erlfdb
-   ]},
-  {env,[]},
-  {modules, []},
-
-  {maintainers, []},
-  {licenses, []},
-  {links, []}
- ]}.
+{application, aegis, [
+    {description, "If it's good enough for Zeus, it's good enough for CouchDB"},
+    {vsn, git},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto,
+        erlfdb
+    ]},
+    {env,[]},
+    {modules, []},
+    {maintainers, []},
+    {licenses, []},
+    {links, []}
+]}.
