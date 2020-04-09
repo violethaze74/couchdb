@@ -89,6 +89,9 @@ encrypt(#{} = Db, Key, Value) ->
     <<1:8, CipherTag:128, CipherText/binary>>.
 
 
+decrypt(#{} = Db, Key, not_found) ->
+    not_found;
+
 decrypt(#{} = Db, Key, Value) when is_binary(Key), is_binary(Value) ->
     #{
         aegis_ctx = Ctx,
