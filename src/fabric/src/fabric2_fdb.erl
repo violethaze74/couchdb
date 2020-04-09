@@ -177,7 +177,7 @@ create(#{} = Db0, Options) ->
         name := DbName,
         tx := Tx,
         layer_prefix := LayerPrefix
-    } = Db = ensure_current(Db0, false),
+    } = Db1 = ensure_current(Db0, false),
 
     DbKey = erlfdb_tuple:pack({?ALL_DBS, DbName}, LayerPrefix),
     HCA = erlfdb_hca:create(erlfdb_tuple:pack({?DB_HCA}, LayerPrefix)),
@@ -220,7 +220,7 @@ create(#{} = Db0, Options) ->
     UserCtx = fabric2_util:get_value(user_ctx, Options, #user_ctx{}),
     Options1 = lists:keydelete(user_ctx, 1, Options),
 
-    Db#{
+    Db2 = Db1#{
         uuid => UUID,
         db_prefix => DbPrefix,
         db_version => DbVersion,
@@ -235,7 +235,8 @@ create(#{} = Db0, Options) ->
         % All other db things as we add features,
 
         db_options => Options1
-    }.
+    },
+    aegis:create(Db2).
 
 
 open(#{} = Db0, Options) ->
@@ -280,14 +281,15 @@ open(#{} = Db0, Options) ->
     },
 
     Db3 = load_config(Db2),
+    Db4 = aegis:open(Db3),
 
-    case {UUID, Db3} of
+    case {UUID, Db4} of
         {undefined, _} -> ok;
         {<<_/binary>>, #{uuid := UUID}} -> ok;
         {<<_/binary>>, #{uuid := _}} -> erlang:error(database_does_not_exist)
     end,
 
-    load_validate_doc_funs(Db3).
+    load_validate_doc_funs(Db4).
 
 
 % Match on `name` in the function head since some non-fabric2 db
@@ -543,7 +545,7 @@ get_all_revs(#{} = Db, DocId) ->
             Key = erlfdb_tuple:unpack(K, DbPrefix),
             Val = erlfdb_tuple:unpack(V),
             fdb_to_revinfo(Key, Val)
-        end, erlfdb:wait(Future))
+        end, aegis:decrypt(Db, erlfdb:wait(Future)))
     end).
 
 
@@ -571,11 +573,12 @@ get_winning_revs_wait(#{} = Db, RangeFuture) ->
         tx := Tx,
         db_prefix := DbPrefix
     } = ensure_current(Db),
-    RevRows = erlfdb:fold_range_wait(Tx, RangeFuture, fun({K, V}, Acc) ->
+    FoldFun = aegis:wrap_fold_fun(Db, fun({K, V}, Acc) ->
         Key = erlfdb_tuple:unpack(K, DbPrefix),
         Val = erlfdb_tuple:unpack(V),
         [fdb_to_revinfo(Key, Val) | Acc]
-    end, []),
+    end),
+    RevRows = erlfdb:fold_range_wait(Tx, RangeFuture, FoldFun, []),
     lists:reverse(RevRows).
 
 
@@ -593,7 +596,8 @@ get_non_deleted_rev(#{} = Db, DocId, RevId) ->
         not_found ->
             not_found;
         Val ->
-            fdb_to_revinfo(BaseKey, erlfdb_tuple:unpack(Val))
+            Decrypted = aegis:decrypt(Db, Key, Value),
+            fdb_to_revinfo(BaseKey, erlfdb_tuple:unpack(Decrypted))
     end.
 
 
@@ -630,9 +634,10 @@ get_doc_body_wait(#{} = Db0, DocId, RevInfo, Future) ->
         rev_path := RevPath
     } = RevInfo,
 
-    RevBodyRows = erlfdb:fold_range_wait(Tx, Future, fun({_K, V}, Acc) ->
+    FoldFun = aegis:wrap_fold_fun(Db, fun({_K, V}, Acc) ->
         [V | Acc]
-    end, []),
+    end),
+    RevBodyRows = erlfdb:fold_range_wait(Tx, Future, FoldFun, []),
     BodyRows = lists:reverse(RevBodyRows),
 
     fdb_to_doc(Db, DocId, RevPos, [Rev | RevPath], BodyRows).
@@ -645,11 +650,11 @@ get_local_doc(#{} = Db0, <<?LOCAL_DOC_PREFIX, _/binary>> = DocId) ->
     } = Db = ensure_current(Db0),
 
     Key = erlfdb_tuple:pack({?DB_LOCAL_DOCS, DocId}, DbPrefix),
-    Rev = erlfdb:wait(erlfdb:get(Tx, Key)),
+    Rev = aegis:decrypt(Db, Key, erlfdb:wait(erlfdb:get(Tx, Key))),
 
     Prefix = erlfdb_tuple:pack({?DB_LOCAL_DOC_BODIES, DocId}, DbPrefix),
     Future = erlfdb:get_range_startswith(Tx, Prefix),
-    Chunks = lists:map(fun({_K, V}) -> V end, erlfdb:wait(Future)),
+    {_, Chunks} = lists:unzip(aegis:decrypt(Db, erlfdb:wait(Future))),
 
     fdb_to_local_doc(Db, DocId, Rev, Chunks).
 
@@ -742,7 +747,7 @@ write_doc(#{} = Db0, Doc, NewWinner0, OldWinner, ToUpdate, ToRemove) ->
     lists:foreach(fun(RI0) ->
         RI = RI0#{winner := false},
         {K, V, undefined} = revinfo_to_fdb(Tx, DbPrefix, DocId, RI),
-        ok = erlfdb:set(Tx, K, V)
+        ok = erlfdb:set(Tx, K, aegis:encrypt(Db, K, V))
     end, ToUpdate),
 
     lists:foreach(fun(RI0) ->
@@ -780,7 +785,7 @@ write_doc(#{} = Db0, Doc, NewWinner0, OldWinner, ToUpdate, ToRemove) ->
         _ ->
             ADKey = erlfdb_tuple:pack({?DB_ALL_DOCS, DocId}, DbPrefix),
             ADVal = erlfdb_tuple:pack(NewRevId),
-            ok = erlfdb:set(Tx, ADKey, ADVal)
+            ok = erlfdb:set(Tx, ADKey, aegis:encrypt(Db, ADKey, ADVal))
     end,
 
     % _changes
@@ -855,7 +860,8 @@ write_local_doc(#{} = Db0, Doc) ->
 
     {LDocKey, LDocVal, NewSize, Rows} = local_doc_to_fdb(Db, Doc),
 
-    {WasDeleted, PrevSize} = case erlfdb:wait(erlfdb:get(Tx, LDocKey)) of
+    PrevVsn = aegis:decrypt(Db, LDocKey, erlfdb:wait(erlfdb:get(Tx, LDocKey))),
+    {WasDeleted, PrevSize} = case  PrevVsn of
         <<255, RevBin/binary>> ->
             case erlfdb_tuple:unpack(RevBin) of
                 {?CURR_LDOC_FORMAT, _Rev, Size} ->
@@ -874,11 +880,13 @@ write_local_doc(#{} = Db0, Doc) ->
             erlfdb:clear(Tx, LDocKey),
             erlfdb:clear_range_startswith(Tx, BPrefix);
         false ->
-            erlfdb:set(Tx, LDocKey, LDocVal),
+            erlfdb:set(Tx, LDocKey, aegis:encrypt(Db, LDocKey, LDocVal)),
             % Make sure to clear the whole range, in case there was a larger
             % document body there before.
             erlfdb:clear_range_startswith(Tx, BPrefix),
-            lists:foreach(fun({K, V}) -> erlfdb:set(Tx, K, V) end, Rows)
+            lists:foreach(fun({K, V}) ->
+                erlfdb:set(Tx, K, aegis:encrypt(Db, K, V))
+            end, Rows)
     end,
 
     case {WasDeleted, Doc#doc.deleted} of
@@ -906,8 +914,8 @@ read_attachment(#{} = Db, DocId, AttId) ->
         not_found ->
             throw({not_found, missing});
         KVs ->
-            Vs = [V || {_K, V} <- KVs],
-            iolist_to_binary(Vs)
+            {_, Chunks} = lists:unzip(aegis:decrypt(Db, KVs)),
+            iolist_to_binary(Chunks)
     end.
 
 
@@ -921,11 +929,11 @@ write_attachment(#{} = Db, DocId, Data) when is_binary(Data) ->
     Chunks = chunkify_binary(Data),
 
     IdKey = erlfdb_tuple:pack({?DB_ATT_NAMES, DocId, AttId}, DbPrefix),
-    ok = erlfdb:set(Tx, IdKey, <<>>),
+    ok = erlfdb:set(Tx, IdKey, aegis:encrypt(Db, IdKey, <<>>)),
 
     lists:foldl(fun(Chunk, ChunkId) ->
         AttKey = erlfdb_tuple:pack({?DB_ATTS, DocId, AttId, ChunkId}, DbPrefix),
-        ok = erlfdb:set(Tx, AttKey, Chunk),
+        ok = erlfdb:set(Tx, AttKey, aegis:encrypt(Db, AttKey, Chunk)),
         ChunkId + 1
     end, 0, Chunks),
     {ok, AttId}.
@@ -979,7 +987,7 @@ fold_range(Tx, FAcc) ->
         ok = erlfdb:set_option(Tx, disallow_writes)
     end,
     Opts = [{limit, Limit} | BaseOpts],
-    Callback = fun fold_range_cb/2,
+    Callback = aegis:wrap_fold_fun(Db, fun fold_range_cb/2),
     try
         #fold_acc{
             user_acc = FinalUserAcc
