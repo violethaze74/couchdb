@@ -345,8 +345,8 @@ reopen(#{} = OldDb) ->
 delete(#{} = Db) ->
     DoRecovery = fabric2_util:do_recovery(),
     case DoRecovery of
-        true -> soft_delete_db(Db);
-        false -> hard_delete_db(Db)
+        false -> soft_delete_db(Db);
+        true -> hard_delete_db(Db)
     end.
 
 
