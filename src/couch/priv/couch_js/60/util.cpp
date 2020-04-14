@@ -15,7 +15,9 @@
 
 #include <jsapi.h>
 #include <js/Initialization.h>
+#include <js/CharacterEncoding.h>
 #include <js/Conversions.h>
+#include <mozilla/Unused.h>
 
 #include "help.h"
 #include "util.h"
@@ -30,23 +32,32 @@ js_to_string(JSContext* cx, JS::HandleValue val)
     JS::UniqueChars chars(JS_EncodeStringToUTF8(cx, sval));
     if(!chars) {
         JS_ClearPendingException(cx);
-        fprintf(stderr, "Error converting value to string.\n");
-        exit(3);
+        return std::string();
     }
 
     return chars.get();
 }
 
 JSString*
-string_to_js(JSContext* cx, const std::string& s)
+string_to_js(JSContext* cx, const std::string& raw)
 {
-    JSString* ret = JS_NewStringCopyN(cx, s.c_str(), s.size());
-    if(ret != nullptr) {
-        return ret;
+    JS::UTF8Chars utf8(raw.c_str(), raw.size());
+    JS::UniqueTwoByteChars utf16;
+    size_t len;
+
+    utf16.reset(JS::UTF8CharsToNewTwoByteCharsZ(cx, utf8, &len).get());
+    if(!utf16) {
+        return nullptr;
     }
 
-    fprintf(stderr, "Unable to allocate string object.\n");
-    exit(3);
+    JSString* ret = JS_NewUCString(cx, utf16.get(), len);
+
+    if(ret) {
+        // JS_NewUCString took ownership on succses
+        mozilla::Unused << utf16.release();
+    }
+
+    return ret;
 }
 
 size_t
