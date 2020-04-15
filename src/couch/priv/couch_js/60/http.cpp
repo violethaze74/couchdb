@@ -21,7 +21,6 @@
 #include <jsapi.h>
 #include <js/Initialization.h>
 #include "config.h"
-#include "utf8.h"
 #include "util.h"
 
 // Soft dependency on cURL bindings because they're

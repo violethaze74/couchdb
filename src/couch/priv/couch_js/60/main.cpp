@@ -30,7 +30,6 @@
 
 #include "config.h"
 #include "http.h"
-#include "utf8.h"
 #include "util.h"
 
 static bool enableSharedMemory = true;
