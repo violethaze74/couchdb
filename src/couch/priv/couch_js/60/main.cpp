@@ -21,6 +21,8 @@
 #include <unistd.h>
 #endif
 
+#include <sstream>
+
 #include <jsapi.h>
 #include <js/Initialization.h>
 #include <js/Conversions.h>
@@ -489,7 +491,14 @@ main(int argc, const char* argv[])
         JS::RootedScript script(cx);
 
         if(!JS_CompileScript(cx, scriptsrc, slen, options, &script)) {
-            fprintf(stderr, "Failed to compile script.\n");
+            JS::RootedValue exc(cx);
+            if(!JS_GetPendingException(cx, &exc)) {
+                fprintf(stderr, "Failed to compile script.\n");
+            } else {
+                JS::RootedObject exc_obj(cx, &exc.toObject());
+                JSErrorReport* report = JS_ErrorFromException(cx, exc_obj);
+                couch_error(cx, report);
+            }
             return 1;
         }
 
@@ -497,7 +506,14 @@ main(int argc, const char* argv[])
 
         JS::RootedValue result(cx);
         if(JS_ExecuteScript(cx, script, &result) != true) {
-            fprintf(stderr, "Failed to execute script.\n");
+            JS::RootedValue exc(cx);
+            if(!JS_GetPendingException(cx, &exc)) {
+                fprintf(stderr, "Failed to execute script.\n");
+            } else {
+                JS::RootedObject exc_obj(cx, &exc.toObject());
+                JSErrorReport* report = JS_ErrorFromException(cx, exc_obj);
+                couch_error(cx, report);
+            }
             return 1;
         }
 
