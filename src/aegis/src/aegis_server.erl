@@ -23,7 +23,8 @@
 %% aegis_server API
 -export([
     start_link/0,
-    generate_key/2,
+    init_db/2,
+    open_db/2,
     encrypt/3,
     decrypt/3
 ]).
@@ -40,8 +41,8 @@
 
 %% workers callbacks
 -export([
-    do_generate_key/2,
-    do_unwrap_key/1,
+    do_init_db/2,
+    do_open_db/2,
     do_encrypt/5,
     do_decrypt/5
 ]).
@@ -58,10 +59,14 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 
--spec generate_key(Db :: #{}, Options :: list()) ->
-        {ok, term() | false} | {error, term()}.
-generate_key(#{} = Db, Options) ->
-    gen_server:call(?MODULE, {generate_key, Db, Options}).
+-spec init_db(Db :: #{}, Options :: list()) -> boolean().
+init_db(#{} = Db, Options) ->
+    gen_server:call(?MODULE, {init_db, Db, Options}).
+
+
+-spec open_db(Db :: #{}, Options :: list()) -> boolean().
+open_db(#{} = Db, Options) ->
+    gen_server:call(?MODULE, {open_db, Db, Options}).
 
 
 -spec encrypt(Db :: #{}, Key :: binary(), Value :: binary()) -> binary().
@@ -97,23 +102,32 @@ terminate(_Reason, St) ->
 
     dict:fold(fun(_AegisConfig, WaitList, _) ->
         lists:foreach(fun(#{from := From}) ->
-            gen_server:reply(From, {error, decryption_aborted})
+            gen_server:reply(From, {error, operation_aborted})
         end, WaitList)
     end, ok, Waiters),
 
     dict:fold(fun(Ref, From, _) ->
         erlang:demonitor(Ref),
-        gen_server:reply(From, {error, decryption_aborted})
+        gen_server:reply(From, {error, operation_aborted})
     end, ok, Openers),
     ok.
 
 
-handle_call({generate_key, Db, Options}, From, #{openers := Openers} = St) ->
+handle_call({init_db, Db, Options}, From, #{openers := Openers} = St) ->
     #{
         uuid := UUID
     } = Db,
 
-    {_, Ref} = erlang:spawn_monitor(?MODULE, do_generate_key, [Db, Options]),
+    {_, Ref} = erlang:spawn_monitor(?MODULE, do_init_db, [Db, Options]),
+    Openers1 = dict:store(Ref, {UUID, From}, Openers),
+    {noreply, St#{openers := Openers1}, ?TIMEOUT};
+
+handle_call({open_db, Db, Options}, From, #{openers := Openers} = St) ->
+    #{
+        uuid := UUID
+    } = Db,
+
+    {_, Ref} = erlang:spawn_monitor(?MODULE, do_open_db, [Db, Options]),
     Openers1 = dict:store(Ref, {UUID, From}, Openers),
     {noreply, St#{openers := Openers1}, ?TIMEOUT};
 
@@ -135,10 +149,10 @@ handle_cast(_Msg, St) ->
 
 handle_info({'DOWN', Ref, _, _Pid, false}, #{openers := Openers} = St) ->
     {{_UUID, From}, Openers1} = dict:take(Ref, Openers),
-    gen_server:reply(From, {ok, false}),
+    gen_server:reply(From, false),
     {noreply, St#{openers := Openers1}, ?TIMEOUT};
 
-handle_info({'DOWN', Ref, _, _Pid, {ok, DbKey, AegisConfig}}, St) ->
+handle_info({'DOWN', Ref, _, _Pid, {ok, DbKey}}, St) ->
     #{
         cache := Cache,
         openers := Openers,
@@ -149,7 +163,7 @@ handle_info({'DOWN', Ref, _, _Pid, {ok, DbKey, AegisConfig}}, St) ->
     case dict:take(Ref, Openers) of
         {{UUID, From}, Openers1} ->
             ok = insert(Cache, UUID, DbKey),
-            gen_server:reply(From, {ok, AegisConfig}),
+            gen_server:reply(From, true),
             {noreply, St#{openers := Openers1}, ?TIMEOUT};
         error ->
             {UUID, Unwrappers1} = dict:take(Ref, Unwrappers),
@@ -202,10 +216,10 @@ code_change(_OldVsn, St, _Extra) ->
 
 %% workers functions
 
-do_generate_key(#{} = Db, Options) ->
+do_init_db(#{} = Db, Options) ->
     process_flag(sensitive, true),
     try
-        aegis_key_manager:generate_key(Db, Options)
+        ?AEGIS_KEY_MANAGER:init_db(Db, Options)
     of
         Resp ->
             exit(Resp)
@@ -215,10 +229,10 @@ do_generate_key(#{} = Db, Options) ->
     end.
 
 
-do_unwrap_key(#{aegis := AegisConfig} = Db) ->
+do_open_db(#{} = Db, Options) ->
     process_flag(sensitive, true),
     try
-        aegis_key_manager:unwrap_key(Db, AegisConfig)
+        ?AEGIS_KEY_MANAGER:open_db(Db, Options)
     of
         Resp ->
             exit(Resp)

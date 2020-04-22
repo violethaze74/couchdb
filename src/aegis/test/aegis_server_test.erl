@@ -16,7 +16,7 @@
 -include_lib("couch/include/couch_eunit.hrl").
 
 -define(SERVER, aegis_server).
--define(DB, #{aegis => <<0:320>>, uuid => <<0:64>>}).
+-define(DB, #{uuid => <<0:64>>}).
 -define(VALUE, <<0:8192>>).
 -define(ENCRYPTED, <<1:8, 0:320, 0:4096>>).
 -define(TIMEOUT, 10000).
@@ -29,8 +29,8 @@ basic_test_() ->
         fun setup/0,
         fun teardown/1,
         [
-            {"cache unwrapped key on generate_key",
-            {timeout, ?TIMEOUT, fun test_generate_key/0}},
+            {"cache unwrapped key on init_db",
+            {timeout, ?TIMEOUT, fun test_init_db/0}},
             {"cache unwrapped key on encrypt",
             {timeout, ?TIMEOUT, fun test_encrypt/0}},
             {"cache unwrapped key on decrypt",
@@ -44,7 +44,7 @@ basic_test_() ->
 setup() ->
     Ctx = test_util:start_couch([fabric]),
     meck:new([aegis_server, aegis_key_manager], [passthrough]),
-    ok = meck:expect(aegis_key_manager, generate_key, fun(Db, _) ->
+    ok = meck:expect(aegis_key_manager, init_db, fun(Db, _) ->
         DbKey = <<0:256>>,
         #{aegis := AegisConfig} = Db,
         {ok, DbKey, AegisConfig}
@@ -68,10 +68,10 @@ teardown(Ctx) ->
     test_util:stop_couch(Ctx).
 
 
-test_generate_key() ->
-    {ok, WrappedKey1} = aegis_server:generate_key(?DB, []),
+test_init_db() ->
+    {ok, WrappedKey1} = aegis_server:init_db(?DB, []),
     ?assertEqual(<<0:320>>, WrappedKey1),
-    ?assertEqual(1, meck:num_calls(aegis_key_manager, generate_key, 2)).
+    ?assertEqual(1, meck:num_calls(aegis_key_manager, init_db, 2)).
 
 
 test_encrypt() ->
@@ -174,14 +174,14 @@ disabled_test_() ->
         foreach,
         fun() ->
             Ctx = setup(),
-            ok = meck:delete(aegis_key_manager, generate_key, 2),
-            ok = meck:expect(aegis_key_manager, generate_key, 2, false),
+            ok = meck:delete(aegis_key_manager, init_db, 2),
+            ok = meck:expect(aegis_key_manager, init_db, 2, false),
             Ctx
         end,
         fun teardown/1,
         [
             {"accept false from key managers",
-            {timeout, ?TIMEOUT, fun test_disabled_generate_key/0}},
+            {timeout, ?TIMEOUT, fun test_disabled_init_db/0}},
             {"pass through on encrypt when encryption disabled",
             {timeout, ?TIMEOUT, fun test_disabled_encrypt/0}},
             {"pass through on decrypt when encryption disabled",
@@ -190,9 +190,9 @@ disabled_test_() ->
     }.
 
 
-test_disabled_generate_key() ->
-    ?assertEqual({ok, false}, aegis_server:generate_key(?DB, [])),
-    ?assertEqual(1, meck:num_calls(aegis_key_manager, generate_key, 2)).
+test_disabled_init_db() ->
+    ?assertEqual({ok, false}, aegis_server:init_db(?DB, [])),
+    ?assertEqual(1, meck:num_calls(aegis_key_manager, init_db, 2)).
 
 
 test_disabled_encrypt() ->
