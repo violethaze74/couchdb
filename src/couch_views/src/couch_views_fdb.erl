@@ -22,12 +22,14 @@
     get_update_seq/2,
     set_update_seq/3,
 
-    get_row_count/3,
-    get_kv_size/3,
+    set_trees/2,
 
-    fold_map_idx/6,
+    get_row_count/2,
+    get_kv_size/2,
 
-    write_doc/4,
+    fold_map_idx/5,
+
+    update_views/3,
 
     list_signatures/1,
     clear_index/2
@@ -126,92 +128,136 @@ set_update_seq(TxDb, Sig, Seq) ->
     ok = erlfdb:set(Tx, seq_key(DbPrefix, Sig), Seq).
 
 
-get_row_count(TxDb, #mrst{sig = Sig}, ViewId) ->
+set_trees(TxDb, Mrst) ->
+    #mrst{
+        sig = Sig,
+        language = Lang,
+        views = Views
+    } = Mrst,
+    Mrst#mrst{
+        id_btree = open_id_tree(TxDb, Sig),
+        views = [open_view_tree(TxDb, Sig, Lang, V) || V <- Views]
+    }.
+
+
+get_row_count(TxDb, View) ->
     #{
-        tx := Tx,
-        db_prefix := DbPrefix
+        tx := Tx
     } = TxDb,
-
-    case erlfdb:wait(erlfdb:get(Tx, row_count_key(DbPrefix, Sig, ViewId))) of
-        not_found -> 0; % Can this happen?
-        CountBin -> ?bin2uint(CountBin)
-    end.
+    {Count, _} = ebtree:full_reduce(Tx, View#mrview.btree),
+    Count.
 
 
-get_kv_size(TxDb, #mrst{sig = Sig}, ViewId) ->
+get_kv_size(TxDb, View) ->
     #{
-        tx := Tx,
-        db_prefix := DbPrefix
+        tx := Tx
     } = TxDb,
-
-    case erlfdb:wait(erlfdb:get(Tx, kv_size_key(DbPrefix, Sig, ViewId))) of
-        not_found -> 0; % Can this happen?
-        SizeBin -> ?bin2uint(SizeBin)
-    end.
+    {_, TotalSize} = ebtree:full_reduce(Tx, View#mrview.btree),
+    TotalSize.
 
 
-fold_map_idx(TxDb, Sig, ViewId, Options, Callback, Acc0) ->
+fold_map_idx(TxDb, View, Options, Callback, Acc0) ->
     #{
-        db_prefix := DbPrefix
+        tx := Tx
     } = TxDb,
+    #mrview{
+        btree = Btree
+    } = View,
 
-    MapIdxPrefix = map_idx_prefix(DbPrefix, Sig, ViewId),
-    FoldAcc = #{
-        prefix => MapIdxPrefix,
-        callback => Callback,
-        acc => Acc0
-        },
-    Fun = aegis:wrap_fold_fun(TxDb, fun fold_fwd/2),
+    CollateFun = couch_views_util:collate_fun(View),
 
-    #{
-        acc := Acc1
-    } = fabric2_fdb:fold_range(TxDb, MapIdxPrefix, Fun, FoldAcc, Options),
+    {Dir, StartKey, EndKey, InclusiveEnd} = to_map_opts(Options),
 
-    Acc1.
-
-
-write_doc(TxDb, Sig, _ViewIds, #{deleted := true} = Doc) ->
-    #{
-        id := DocId
-    } = Doc,
-
-    ExistingViewKeys = get_view_keys(TxDb, Sig, DocId),
-
-    clear_id_idx(TxDb, Sig, DocId),
-    lists:foreach(fun({ViewId, TotalKeys, TotalSize, UniqueKeys}) ->
-        clear_map_idx(TxDb, Sig, ViewId, DocId, UniqueKeys),
-        update_row_count(TxDb, Sig, ViewId, -TotalKeys),
-        update_kv_size(TxDb, Sig, ViewId, -TotalSize)
-    end, ExistingViewKeys);
-
-write_doc(TxDb, Sig, ViewIds, Doc) ->
-    #{
-        id := DocId,
-        results := Results,
-        kv_sizes := KVSizes
-    } = Doc,
-
-    ExistingViewKeys = get_view_keys(TxDb, Sig, DocId),
-
-    clear_id_idx(TxDb, Sig, DocId),
-
-    lists:foreach(fun({ViewId, NewRows, KVSize}) ->
-        update_id_idx(TxDb, Sig, ViewId, DocId, NewRows, KVSize),
-
-        ExistingKeys = case lists:keyfind(ViewId, 1, ExistingViewKeys) of
-            {ViewId, TotalRows, TotalSize, EKeys} ->
-                RowChange = length(NewRows) - TotalRows,
-                update_row_count(TxDb, Sig, ViewId, RowChange),
-                update_kv_size(TxDb, Sig, ViewId, KVSize - TotalSize),
-                EKeys;
-            false ->
-                RowChange = length(NewRows),
-                update_row_count(TxDb, Sig, ViewId, RowChange),
-                update_kv_size(TxDb, Sig, ViewId, KVSize),
-                []
+    Wrapper = fun(KVs0, WAcc) ->
+        % Remove any keys that match Start or End key
+        % depending on direction
+        KVs1 = case InclusiveEnd of
+            true ->
+                KVs0;
+            false when Dir == fwd ->
+                lists:filter(fun({K, _V}) ->
+                    case CollateFun(K, EndKey) of
+                        lt -> true;
+                        eq -> false;
+                        gt -> false
+                    end
+                end, KVs0);
+            false when Dir == rev ->
+                lists:filter(fun({K, _V}) ->
+                    case CollateFun(K, EndKey) of
+                        lt -> false;
+                        eq -> false;
+                        gt -> true
+                    end
+                end, KVs0)
         end,
-        update_map_idx(TxDb, Sig, ViewId, DocId, ExistingKeys, NewRows)
-    end, lists:zip3(ViewIds, Results, KVSizes)).
+        % Expand dups
+        KVs2 = lists:flatmap(fun({K, V}) ->
+            case V of
+                {dups, Dups} when Dir == fwd ->
+                    [{K, D} || D <- Dups];
+                {dups, Dups} when Dir == rev ->
+                    [{K, D} || D <- lists:reverse(Dups)];
+                _ ->
+                    [{K, V}]
+            end
+        end, KVs1),
+        lists:foldl(fun({{Key, DocId}, Value}, WAccInner) ->
+            Callback(DocId, Key, Value, WAccInner)
+        end, WAcc, KVs2)
+    end,
+
+    case Dir of
+        fwd ->
+            ebtree:range(Tx, Btree, StartKey, EndKey, Wrapper, Acc0);
+        rev ->
+            % Start/End keys swapped on purpose because ebtree
+            ebtree:reverse_range(Tx, Btree, EndKey, StartKey, Wrapper, Acc0)
+    end.
+
+
+update_views(TxDb, Mrst, Docs) ->
+    #{
+        tx := Tx
+    } = TxDb,
+
+    % Collect update information
+
+    #{
+        ids := IdMap,
+        views := ViewMaps,
+        delete_ref := DeleteRef
+    } = gather_update_info(Tx, Mrst, Docs),
+
+    % Generate a list of Keys to delete and Rows to insert from a map
+    UpdateBTree = fun(BTree, Map) ->
+        {ToRemove, ToInsert} = maps:fold(fun(Key, Value, {Keys, Rows}) ->
+            case Value of
+                DeleteRef -> {[Key | Keys], Rows};
+                _ -> {Keys, [{Key, Value} | Rows]}
+            end
+        end, {[], []}, Map),
+
+        lists:foreach(fun(Key) ->
+            ebtree:delete(Tx, BTree, Key)
+        end, ToRemove),
+
+        ebtree:insert_multi(Tx, BTree, ToInsert)
+    end,
+
+    % Update the IdBtree
+    UpdateBTree(Mrst#mrst.id_btree, IdMap),
+
+    % Update each view's BTree
+    lists:foreach(fun(View) ->
+        #mrview{
+            id_num = ViewId,
+            btree = BTree
+        } = View,
+
+        ViewMap = maps:get(ViewId, ViewMaps, #{}),
+        UpdateBTree(BTree, ViewMap)
+    end, Mrst#mrst.views).
 
 
 list_signatures(Db) ->
@@ -244,198 +290,282 @@ clear_index(Db, Signature) ->
     end, Keys),
 
     % Clear index data
-    RangeTuple = {?DB_VIEWS, ?VIEW_DATA, Signature},
-    RangePrefix = erlfdb_tuple:pack(RangeTuple, DbPrefix),
-    erlfdb:clear_range_startswith(Tx, RangePrefix).
+    DataTuple = {?DB_VIEWS, ?VIEW_DATA, Signature},
+    DataPrefix = erlfdb_tuple:pack(DataTuple, DbPrefix),
+    erlfdb:clear_range_startswith(Tx, DataPrefix),
+
+    % Clear tree data
+    TreeTuple = {?DB_VIEWS, ?VIEW_TREES, Signature},
+    TreePrefix = erlfdb_tuple:pack(TreeTuple, DbPrefix),
+    erlfdb:clear_range_startswith(Tx, TreePrefix).
 
 
-% For each row in a map view we store the the key/value
-% in FoundationDB:
-%
-%   `(EncodedSortKey, (EncodedKey, EncodedValue))`
-%
-% The difference between `EncodedSortKey` and `EndcodedKey` is
-% the use of `couch_util:get_sort_key/1` which turns UTF-8
-% strings into binaries that are byte comparable. Given a sort
-% key binary we cannot recover the input so to return unmodified
-% user data we are forced to store the original.
-
-fold_fwd({RowKey, PackedKeyValue}, Acc) ->
+open_id_tree(TxDb, Sig) ->
     #{
-        prefix := Prefix,
-        callback := UserCallback,
-        acc := UserAcc0
-    } = Acc,
+        tx := Tx,
+        db_prefix := DbPrefix
+    } = TxDb,
+    Prefix = id_tree_prefix(DbPrefix, Sig),
+    TreeOpts = [
+        {persist_fun, fun persist_chunks/3},
+        {cache_fun, create_cache_fun(id_tree)}
+    ],
+    ebtree:open(Tx, Prefix, get_order(id_btree), TreeOpts).
 
-    {{_SortKey, DocId}, _DupeId} =
-            erlfdb_tuple:unpack(RowKey, Prefix),
 
-    {EncodedOriginalKey, EncodedValue} = erlfdb_tuple:unpack(PackedKeyValue),
-    Value = couch_views_encoding:decode(EncodedValue),
-    Key = couch_views_encoding:decode(EncodedOriginalKey),
-
-    UserAcc1 = UserCallback(DocId, Key, Value, UserAcc0),
-
-    Acc#{
-        acc := UserAcc1
+open_view_tree(TxDb, Sig, _Lang, View) ->
+    #{
+        tx := Tx,
+        db_prefix := DbPrefix
+    } = TxDb,
+    #mrview{
+        id_num = ViewId
+    } = View,
+    Prefix = view_tree_prefix(DbPrefix, Sig, ViewId),
+    TreeOpts = [
+        {collate_fun, couch_views_util:collate_fun(View)},
+        {reduce_fun, make_reduce_fun(View)},
+        {persist_fun, fun persist_chunks/3},
+        {cache_fun, create_cache_fun({view, ViewId})}
+    ],
+    View#mrview{
+        btree = ebtree:open(Tx, Prefix, get_order(view_btree), TreeOpts)
     }.
 
 
-clear_id_idx(TxDb, Sig, DocId) ->
-    #{
-        tx := Tx,
-        db_prefix := DbPrefix
-    } = TxDb,
-
-    {Start, End} = id_idx_range(DbPrefix, Sig, DocId),
-    ok = erlfdb:clear_range(Tx, Start, End).
+get_order(id_btree) ->
+    min_order(config:get_integer("couch_views", "id_btree_node_size", 100));
+get_order(view_btree) ->
+    min_order(config:get_integer("couch_views", "view_btree_node_size", 100)).
 
 
-clear_map_idx(TxDb, Sig, ViewId, DocId, ViewKeys) ->
-    #{
-        tx := Tx,
-        db_prefix := DbPrefix
-    } = TxDb,
-
-    lists:foreach(fun(ViewKey) ->
-        {Start, End} = map_idx_range(DbPrefix, Sig, ViewId, ViewKey, DocId),
-        ok = erlfdb:clear_range(Tx, Start, End)
-    end, ViewKeys).
+min_order(V) when is_integer(V), V < 2 ->
+    2;
+min_order(V) when is_integer(V), V rem 2 == 0 ->
+    V;
+min_order(V) ->
+    V + 1.
 
 
-update_id_idx(TxDb, Sig, ViewId, DocId, [], _KVSize) ->
-    #{
-        tx := Tx,
-        db_prefix := DbPrefix
-    } = TxDb,
-    Key = id_idx_key(DbPrefix, Sig, DocId, ViewId),
-    ok = erlfdb:clear(Tx, Key);
-
-update_id_idx(TxDb, Sig, ViewId, DocId, NewRows, KVSize) ->
-    #{
-        tx := Tx,
-        db_prefix := DbPrefix
-    } = TxDb,
-
-    Unique = lists:usort([K || {K, _V} <- NewRows]),
-
-    Key = id_idx_key(DbPrefix, Sig, DocId, ViewId),
-    Val = couch_views_encoding:encode([length(NewRows), KVSize, Unique]),
-    ok = erlfdb:set(Tx, Key, aegis:encrypt(TxDb, Key, Val)).
-
-
-update_map_idx(TxDb, Sig, ViewId, DocId, ExistingKeys, NewRows) ->
-    #{
-        tx := Tx,
-        db_prefix := DbPrefix
-    } = TxDb,
-
-    lists:foreach(fun(RemKey) ->
-        {Start, End} = map_idx_range(DbPrefix, Sig, ViewId, RemKey, DocId),
-        ok = erlfdb:clear_range(Tx, Start, End)
-    end, ExistingKeys),
-
-    KVsToAdd = process_rows(NewRows),
-    MapIdxPrefix = map_idx_prefix(DbPrefix, Sig, ViewId),
-
-    lists:foreach(fun({DupeId, Key1, Key2, EV}) ->
-        KK = map_idx_key(MapIdxPrefix, {Key1, DocId}, DupeId),
-        Val = erlfdb_tuple:pack({Key2, EV}),
-        ok = erlfdb:set(Tx, KK, aegis:encrypt(TxDb, KK, Val))
-    end, KVsToAdd).
+make_reduce_fun(#mrview{}) ->
+    fun
+        (KVs, _ReReduce = false) ->
+            TotalSize = lists:foldl(fun({K, V}, Acc) ->
+                KSize = couch_ejson_size:encoded_size(K),
+                VSize = case V of
+                    {dups, Dups} ->
+                        lists:foldl(fun(D, DAcc) ->
+                            DAcc + couch_ejson_size:encoded_size(D)
+                        end, 0, Dups);
+                    _ ->
+                        couch_ejson_size:encoded_size(V)
+                end,
+                KSize + VSize + Acc
+            end, 0, KVs),
+            {length(KVs), TotalSize};
+        (KRs, _ReReduce = true) ->
+            lists:foldl(fun({Count, Size}, {CountAcc, SizeAcc}) ->
+                {Count + CountAcc, Size + SizeAcc}
+            end, {0, 0}, KRs)
+    end.
 
 
-get_view_keys(TxDb, Sig, DocId) ->
-    #{
-        tx := Tx,
-        db_prefix := DbPrefix
-    } = TxDb,
-    {Start, End} = id_idx_range(DbPrefix, Sig, DocId),
-    lists:map(fun({K, V}) ->
-        {?DB_VIEWS, ?VIEW_DATA, Sig, ?VIEW_ID_RANGE, DocId, ViewId} =
-                erlfdb_tuple:unpack(K, DbPrefix),
-        [TotalKeys, TotalSize, UniqueKeys] = couch_views_encoding:decode(V),
-        {ViewId, TotalKeys, TotalSize, UniqueKeys}
-    end, aegis:decrypt(TxDb, erlfdb:get_range(Tx, Start, End, []))).
+persist_chunks(Tx, set, [Key, Value]) ->
+    Chunks = fabric2_fdb:chunkify_binary(Value),
+    LastId = lists:foldl(fun(Chunk, Id) ->
+        ChunkKey = erlfdb_tuple:pack({Id}, Key),
+        erlfdb:set(Tx, ChunkKey, Chunk),
+        Id + 1
+    end, 0, Chunks),
+
+    % We update nodes in place, so its possible that
+    % a node shrank. This clears any keys that we haven't
+    % just overwritten for the provided key.
+    LastIdKey = erlfdb_tuple:pack({LastId}, Key),
+    EndRange = <<Key/binary, 16#FF>>,
+    erlfdb:clear_range(Tx, LastIdKey, EndRange);
+
+persist_chunks(Tx, get, Key) ->
+    Rows = erlfdb:get_range_startswith(Tx, Key),
+    Values = [V || {_K, V} <- Rows],
+    iolist_to_binary(Values);
+
+persist_chunks(Tx, clear, Key) ->
+    erlfdb:clear_range_startswith(Tx, Key).
 
 
-update_row_count(TxDb, Sig, ViewId, Increment) ->
-    #{
-        tx := Tx,
-        db_prefix := DbPrefix
-    } = TxDb,
-    Key = row_count_key(DbPrefix, Sig, ViewId),
-    erlfdb:add(Tx, Key, Increment).
+create_cache_fun(TreeId) ->
+    CacheTid = case get(TreeId) of
+        undefined ->
+            Tid = ets:new(?MODULE, [protected, set]),
+            put(TreeId, {ebtree_cache, Tid}),
+            Tid;
+        {ebtree_cache, Tid} ->
+            Tid
+    end,
+    fun
+        (set, [Id, Node]) ->
+            true = ets:insert_new(CacheTid, {Id, Node}),
+            ok;
+        (clear, Id) ->
+            ets:delete(CacheTid, Id),
+            ok;
+        (get, Id) ->
+            case ets:lookup(CacheTid, Id) of
+                [{Id, Node}] -> Node;
+                [] -> undefined
+            end
+    end.
 
 
-update_kv_size(TxDb, Sig, ViewId, Increment) ->
-    #{
-        tx := Tx,
-        db_prefix := DbPrefix
-    } = TxDb,
+to_map_opts(Options) ->
+    Dir = case lists:keyfind(dir, 1, Options) of
+        {dir, D} -> D;
+        _ -> fwd
+    end,
 
-    % Track a view specific size for calls to
-    % GET /dbname/_design/doc/_info`
-    IdxKey = kv_size_key(DbPrefix, Sig, ViewId),
-    erlfdb:add(Tx, IdxKey, Increment),
+    InclusiveEnd = case lists:keyfind(inclusive_end, 1, Options) of
+        {inclusive_end, IE} -> IE;
+        _ -> true
+    end,
 
-    % Track a database level rollup for calls to
-    % GET /dbname
-    DbKey = db_kv_size_key(DbPrefix),
-    erlfdb:add(Tx, DbKey, Increment).
+    StartKey = case lists:keyfind(start_key, 1, Options) of
+        {start_key, SK} -> SK;
+        false when Dir == fwd -> ebtree:min();
+        false when Dir == rev -> ebtree:max()
+    end,
+
+    EndKey = case lists:keyfind(end_key, 1, Options) of
+        {end_key, EK} -> EK;
+        false when Dir == fwd -> ebtree:max();
+        false when Dir == rev -> ebtree:min()
+    end,
+
+    {Dir, StartKey, EndKey, InclusiveEnd}.
+
+
+gather_update_info(Tx, Mrst, Docs) ->
+    % A special token used to indicate that the row should be deleted
+    DeleteRef = erlang:make_ref(),
+
+    AllDocIds = [DocId || #{id := DocId} <- Docs],
+
+    BaseIdMap = lists:foldl(fun(DocId, Acc) ->
+        maps:put(DocId, DeleteRef, Acc)
+    end, #{}, AllDocIds),
+
+    % Build the initial set of rows to delete
+    % ExistingViewKeys is a list of {DocId, [{ViewId, [Key | _]} | _]}
+    ExistingViewKeys = ebtree:lookup_multi(Tx, Mrst#mrst.id_btree, AllDocIds),
+
+    BaseViewMaps = lists:foldl(fun({DocId, ViewIdKeys}, ViewIdAcc1) ->
+        lists:foldl(fun({ViewId, Keys}, ViewIdAcc2) ->
+            OldViewMap = maps:get(ViewId, ViewIdAcc2, #{}),
+            NewViewMap = lists:foldl(fun(Key, ViewMapAcc) ->
+                maps:put({Key, DocId}, DeleteRef, ViewMapAcc)
+            end, OldViewMap, Keys),
+            maps:put(ViewId, NewViewMap, ViewIdAcc2)
+        end, ViewIdAcc1, ViewIdKeys)
+    end, #{}, ExistingViewKeys),
+
+    % Build our base accumulator
+    InfoAcc1 = #{
+        ids => BaseIdMap,
+        views => BaseViewMaps,
+        delete_ref => DeleteRef
+    },
+
+    lists:foldl(fun(Doc, InfoAcc2) ->
+        #{
+            id := DocId,
+            deleted := Deleted,
+            results := Results
+        } = Doc,
+
+        if Deleted -> InfoAcc2; true ->
+            Out = lists:foldl(fun({View, RawNewRows}, {IdKeyAcc, InfoAcc3}) ->
+                #mrview{
+                    id_num = ViewId
+                } = View,
+                #{
+                    views := ViewMaps
+                } = InfoAcc3,
+
+                DedupedRows = dedupe_rows(View, RawNewRows),
+                IdKeys = lists:usort([K || {K, _V} <- DedupedRows]),
+
+                OldViewMap = maps:get(ViewId, ViewMaps, #{}),
+                NewViewMap = lists:foldl(fun({K, V}, ViewMapAcc) ->
+                    maps:put({K, DocId}, V, ViewMapAcc)
+                end, OldViewMap, DedupedRows),
+
+                {[{ViewId, IdKeys} | IdKeyAcc], InfoAcc3#{
+                    views := maps:put(ViewId, NewViewMap, ViewMaps)
+                }}
+            end, {[], InfoAcc2}, lists:zip(Mrst#mrst.views, Results)),
+
+            {IdRows, #{ids := IdMap} = InfoAcc4} = Out,
+
+            % Don't store a row in the id_btree if it hasn't got any
+            % keys that will need to be deleted.
+            NonEmptyRows = [1 || {_ViewId, Rows} <- IdRows, Rows /= []],
+            if length(NonEmptyRows) == 0 -> InfoAcc4; true ->
+                InfoAcc4#{ids := maps:put(DocId, IdRows, IdMap)}
+            end
+        end
+    end, InfoAcc1, Docs).
+
+
+dedupe_rows(View, KVs0) ->
+    CollateFun = couch_views_util:collate_fun(View),
+    KVs1 = lists:sort(fun({KeyA, ValA}, {KeyB, ValB}) ->
+        case CollateFun({KeyA, <<>>}, {KeyB, <<>>}) of
+            lt -> true;
+            eq -> ValA =< ValB;
+            gt -> false
+        end
+    end, KVs0),
+    dedupe_rows_int(CollateFun, KVs1).
+
+
+dedupe_rows_int(_CollateFun, []) ->
+    [];
+
+dedupe_rows_int(_CollateFun, [KV]) ->
+    [KV];
+
+dedupe_rows_int(CollateFun, [{K1, V1} | RestKVs]) ->
+    RestDeduped = dedupe_rows_int(CollateFun, RestKVs),
+    case RestDeduped of
+        [{K2, V2} | RestRestDeduped] ->
+            case CollateFun({K1, <<>>}, {K2, <<>>}) of
+                eq -> [{K1, combine_vals(V1, V2)} | RestRestDeduped];
+                _ -> [{K1, V1} | RestDeduped]
+            end;
+        [] ->
+            [{K1, V1}]
+    end.
+
+
+combine_vals(V1, {dups, V2}) ->
+    {dups, [V1 | V2]};
+combine_vals(V1, V2) ->
+    {dups, [V1, V2]}.
+
+
+id_tree_prefix(DbPrefix, Sig) ->
+    Key = {?DB_VIEWS, ?VIEW_TREES, Sig, ?VIEW_ID_TREE},
+    erlfdb_tuple:pack(Key, DbPrefix).
+
+
+view_tree_prefix(DbPrefix, Sig, ViewId) ->
+    Key = {?DB_VIEWS, ?VIEW_TREES, Sig, ?VIEW_ROW_TREES, ViewId},
+    erlfdb_tuple:pack(Key, DbPrefix).
 
 
 seq_key(DbPrefix, Sig) ->
     Key = {?DB_VIEWS, ?VIEW_INFO, ?VIEW_UPDATE_SEQ, Sig},
     erlfdb_tuple:pack(Key, DbPrefix).
-
-
-row_count_key(DbPrefix, Sig, ViewId) ->
-    Key = {?DB_VIEWS, ?VIEW_INFO, ?VIEW_ROW_COUNT, Sig, ViewId},
-    erlfdb_tuple:pack(Key, DbPrefix).
-
-
-kv_size_key(DbPrefix, Sig, ViewId) ->
-    Key = {?DB_VIEWS, ?VIEW_INFO, ?VIEW_KV_SIZE, Sig, ViewId},
-    erlfdb_tuple:pack(Key, DbPrefix).
-
-
-db_kv_size_key(DbPrefix) ->
-    Key = {?DB_STATS, <<"sizes">>, <<"views">>},
-    erlfdb_tuple:pack(Key, DbPrefix).
-
-
-id_idx_key(DbPrefix, Sig, DocId, ViewId) ->
-    Key = {?DB_VIEWS, ?VIEW_DATA, Sig, ?VIEW_ID_RANGE, DocId, ViewId},
-    erlfdb_tuple:pack(Key, DbPrefix).
-
-
-id_idx_range(DbPrefix, Sig, DocId) ->
-    Key = {?DB_VIEWS, ?VIEW_DATA, Sig, ?VIEW_ID_RANGE, DocId},
-    erlfdb_tuple:range(Key, DbPrefix).
-
-
-map_idx_prefix(DbPrefix, Sig, ViewId) ->
-    Key = {?DB_VIEWS, ?VIEW_DATA, Sig, ?VIEW_MAP_RANGE, ViewId},
-    erlfdb_tuple:pack(Key, DbPrefix).
-
-
-map_idx_key(MapIdxPrefix, MapKey, DupeId) ->
-    Key = {MapKey, DupeId},
-    erlfdb_tuple:pack(Key, MapIdxPrefix).
-
-
-map_idx_range(DbPrefix, Sig, ViewId, MapKey, DocId) ->
-    Encoded = couch_views_encoding:encode(MapKey, key),
-    Key = {
-        ?DB_VIEWS,
-        ?VIEW_DATA,
-        Sig,
-        ?VIEW_MAP_RANGE,
-        ViewId,
-        {Encoded, DocId}
-    },
-    erlfdb_tuple:range(Key, DbPrefix).
 
 
 creation_vs_key(Db, Sig) ->
@@ -454,22 +584,15 @@ build_status_key(Db, Sig) ->
     erlfdb_tuple:pack(Key, DbPrefix).
 
 
-process_rows(Rows) ->
-    Encoded = lists:map(fun({K, V}) ->
-        EK1 = couch_views_encoding:encode(K, key),
-        EK2 = couch_views_encoding:encode(K, value),
-        EV = couch_views_encoding:encode(V, value),
-        {EK1, EK2, EV}
-    end, Rows),
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
 
-    Grouped = lists:foldl(fun({K1, K2, V}, Acc) ->
-        dict:append(K1, {K2, V}, Acc)
-    end, dict:new(), Encoded),
+dedupe_basic_test() ->
+    View = #mrview{},
+    ?assertEqual([{1, 1}], dedupe_rows(View, [{1, 1}])).
 
-    dict:fold(fun(K1, Vals, DAcc) ->
-        Vals1 = lists:keysort(2, Vals),
-        {_, Labeled} = lists:foldl(fun({K2, V}, {Count, Acc}) ->
-            {Count + 1, [{Count, K1, K2, V} | Acc]}
-        end, {0, []}, Vals1),
-        Labeled ++ DAcc
-    end, [], Grouped).
+dedupe_simple_test() ->
+    View = #mrview{},
+    ?assertEqual([{1, {dups, [1, 2]}}], dedupe_rows(View, [{1, 1}, {1, 2}])).
+
+-endif.
