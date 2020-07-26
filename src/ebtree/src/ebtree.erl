@@ -172,7 +172,7 @@ fold(Db, #tree{} = Tree, Fun, Acc) ->
     Acc1 :: term().
 fold(Db, #tree{} = Tree, Fun, Acc, Options) ->
     {_, Reduce} = erlfdb:transactional(Db, fun(Tx) ->
-        Root = get_node(Tx, Tree, ?NODE_ROOT_ID),
+        Root = get_node(Tx, Tree, ?NODE_ROOT_ID, ?NODE_ROOT_ID),
         fold(Db, Tree, Root, Fun, Acc, Options)
     end),
     Reduce.
@@ -184,32 +184,32 @@ fold(Db, #tree{} = Tree, #node{} = Node, Fun, Acc, Options) ->
         fwd -> Node#node.members;
         rev -> lists:reverse(Node#node.members)
     end,
-    fold(Db, #tree{} = Tree, Members, Fun, Acc, Options);
+    fold(Db, #tree{} = Tree, Node#node.level, Members, Fun, Acc, Options).
 
 
-fold(_Db, #tree{} = _Tree, [], _Fun, Acc, _Options) ->
+fold(_Db, #tree{} = _Tree, _Level, [], _Fun, Acc, _Options) ->
     {ok, Acc};
 
-fold(Db, #tree{} = Tree, [{K, V} | Rest], Fun, Acc0, Options) ->
+fold(Db, #tree{} = Tree, 0, [{K, V} | Rest], Fun, Acc0, Options) ->
     case Fun({visit, K, V}, Acc0) of
         {ok, Acc1} ->
-            fold(Db, Tree, Rest, Fun, Acc1, Options);
+            fold(Db, Tree, 0, Rest, Fun, Acc1, Options);
         {stop, Acc1} ->
             {stop, Acc1}
     end;
 
-fold(Db, #tree{} = Tree, [{F, L, P, R} | Rest], Fun, Acc0, Options) ->
+fold(Db, #tree{} = Tree, Level, [{F, L, P, R} | Rest], Fun, Acc0, Options) ->
     case Fun({traverse, F, L, R}, Acc0) of
         {ok, Acc1} ->
-            Node = get_node(Db, Tree, P),
+            Node = get_node(Db, Tree, Level - 1, P),
             case fold(Db, Tree, Node, Fun, Acc1, Options) of
                 {ok, Acc2} ->
-                    fold(Db, Tree, Rest, Fun, Acc2, Options);
+                    fold(Db, Tree, Level, Rest, Fun, Acc2, Options);
                 {stop, Acc2} ->
                     {stop, Acc2}
             end;
         {skip, Acc1} ->
-            fold(Db, Tree, Rest, Fun, Acc1, Options);
+            fold(Db, Tree, Level, Rest, Fun, Acc1, Options);
         {stop, Acc1} ->
             {stop, Acc1}
     end.
@@ -380,7 +380,7 @@ group_reduce(Db, #tree{} = Tree, StartKey, EndKey, GroupKeyFun, UserAccFun, User
     AccFun :: fun(), Acc0 :: term()) -> term().
 range(Db, #tree{} = Tree, StartKey, EndKey, AccFun, Acc0) ->
     erlfdb:transactional(Db, fun(Tx) ->
-        range(Tx, Tree, get_node(Tx, Tree, ?NODE_ROOT_ID), StartKey, EndKey, AccFun, Acc0)
+        range(Tx, Tree, get_node(Tx, Tree, ?NODE_ROOT_ID, ?NODE_ROOT_ID), StartKey, EndKey, AccFun, Acc0)
     end).
 
 
@@ -391,14 +391,14 @@ range(Tx, #tree{} = Tree, #node{level = 0} = Node, StartKey, EndKey, AccFun, Acc
     LastKey = last_key(Node),
     case Node#node.next /= undefined andalso less_than_or_equal(Tree, LastKey, EndKey) of
         true ->
-            range(Tx, Tree, get_node(Tx, Tree, Node#node.next), StartKey, EndKey, AccFun, Acc1);
+            range(Tx, Tree, get_node(Tx, Tree, 0, Node#node.next), StartKey, EndKey, AccFun, Acc1);
         false ->
             Acc1
     end;
 
 range(Tx, #tree{} = Tree, #node{} = Node, StartKey, EndKey, AccFun, Acc) ->
     ChildId = find_child_id(Tree, Node, StartKey),
-    range(Tx, Tree, get_node(Tx, Tree, ChildId), StartKey, EndKey, AccFun, Acc).
+    range(Tx, Tree, get_node(Tx, Tree, Node#node.level - 1, ChildId), StartKey, EndKey, AccFun, Acc).
 
 
 %% @doc Finds all key-value pairs for the specified range in reverse order.
@@ -413,7 +413,7 @@ range(Tx, #tree{} = Tree, #node{} = Node, StartKey, EndKey, AccFun, Acc) ->
     AccFun :: fun(), Acc0 :: term()) -> term().
 reverse_range(Db, #tree{} = Tree, StartKey, EndKey, AccFun, Acc0) ->
     erlfdb:transactional(Db, fun(Tx) ->
-        reverse_range(Tx, Tree, get_node(Tx, Tree, ?NODE_ROOT_ID), StartKey, EndKey, AccFun, Acc0)
+        reverse_range(Tx, Tree, get_node(Tx, Tree, ?NODE_ROOT_ID, ?NODE_ROOT_ID), StartKey, EndKey, AccFun, Acc0)
     end).
 
 
@@ -424,14 +424,14 @@ reverse_range(Tx, #tree{} = Tree, #node{level = 0} = Node, StartKey, EndKey, Acc
     FirstKey = first_key(Node),
     case Node#node.prev /= undefined andalso less_than_or_equal(Tree, StartKey, FirstKey) of
         true ->
-            reverse_range(Tx, Tree, get_node(Tx, Tree, Node#node.prev), StartKey, EndKey, AccFun, Acc1);
+            reverse_range(Tx, Tree, get_node(Tx, Tree, 0, Node#node.prev), StartKey, EndKey, AccFun, Acc1);
         false ->
             Acc1
     end;
 
 reverse_range(Tx, #tree{} = Tree, #node{} = Node, StartKey, EndKey, AccFun, Acc) ->
     ChildId = find_child_id(Tree, Node, EndKey),
-    reverse_range(Tx, Tree, get_node(Tx, Tree, ChildId), StartKey, EndKey, AccFun, Acc).
+    reverse_range(Tx, Tree, get_node(Tx, Tree, Node#node.level - 1, ChildId), StartKey, EndKey, AccFun, Acc).
 
 
 %% @doc Inserts or updates a value in the ebtree
@@ -449,7 +449,7 @@ insert(_Db, #tree{} = _Tree, ?MAX, _Value) ->
 
 insert(Db, #tree{} = Tree, Key, Value) ->
     erlfdb:transactional(Db, fun(Tx) ->
-        Root0 = get_node(Tx, Tree, ?NODE_ROOT_ID),
+        Root0 = get_node(Tx, Tree, ?NODE_ROOT_ID, ?NODE_ROOT_ID),
         case ?is_full(Tree, Root0) of
             true ->
                 OldRoot = Root0#node{id = new_node_id(Tx, Tree)},
@@ -518,7 +518,7 @@ update_prev_neighbour(_Tx, #tree{} = _Tree, #node{prev = undefined} = _Node) ->
     ok;
 
 update_prev_neighbour(Tx, #tree{} = Tree, #node{} = Node) ->
-    Left = get_node(Tx, Tree, Node#node.prev),
+    Left = get_node(Tx, Tree, Node#node.level, Node#node.prev),
     set_node(Tx, Tree, Left#node{next = Node#node.id}).
 
 
@@ -526,7 +526,7 @@ update_next_neighbour(_Tx, #tree{} = _Tree, #node{next = undefined} = _Node) ->
     ok;
 
 update_next_neighbour(Tx, #tree{} = Tree, #node{} = Node) ->
-    Left = get_node(Tx, Tree, Node#node.next),
+    Left = get_node(Tx, Tree, Node#node.level, Node#node.next),
     set_node(Tx, Tree, Left#node{prev = Node#node.id}).
 
 
@@ -539,7 +539,7 @@ insert_nonfull(Tx, #tree{} = Tree, #node{level = 0} = Node0, Key, Value) ->
 
 insert_nonfull(Tx, #tree{} = Tree, #node{} = Node0, Key, Value) ->
     ChildId0 = find_child_id(Tree, Node0, Key),
-    Child0 = get_node(Tx, Tree, ChildId0),
+    Child0 = get_node(Tx, Tree, Node0#node.level - 1, ChildId0),
     {Node1, Child1} = case ?is_full(Tree, Child0) of
         true ->
             {Parent, LeftChild, RightChild} = split_child(Tx, Tree, Node0, Child0),
@@ -575,12 +575,12 @@ insert_nonfull(Tx, #tree{} = Tree, #node{} = Node0, Key, Value) ->
 -spec delete(Db :: term(), Tree :: #tree{}, Key :: term()) -> #tree{}.
 delete(Db, #tree{} = Tree, Key) ->
     erlfdb:transactional(Db, fun(Tx) ->
-        Root0 = get_node(Tx, Tree, ?NODE_ROOT_ID),
+        Root0 = get_node(Tx, Tree, ?NODE_ROOT_ID, ?NODE_ROOT_ID),
         case delete(Tx, Tree, Root0, Key) of
             % if only one child, make it the new root.
             #node{level = L, members = [_]} = Root1 when L > 0 ->
                 [{_, _, ChildId, _}] = Root1#node.members,
-                Root2 = get_node(Tx, Tree, ChildId),
+                Root2 = get_node(Tx, Tree, L - 1, ChildId),
                 clear_node(Tx, Tree, Root2),
                 set_node(Tx, Tree, Root2#node{id = ?NODE_ROOT_ID});
             Root1 ->
@@ -597,12 +597,12 @@ delete(_Tx, #tree{} = _Tree, #node{level = 0} = Node, Key) ->
 
 delete(Tx, #tree{} = Tree, #node{} = Parent0, Key) ->
     ChildId0 = find_child_id(Tree, Parent0, Key),
-    Child0 = get_node(Tx, Tree, ChildId0),
+    Child0 = get_node(Tx, Tree, Parent0#node.level - 1, ChildId0),
     Child1 = delete(Tx, Tree, Child0, Key),
     case ?underflow(Tree, Child1) of
         true ->
             SiblingId = find_sibling_id(Tree, Parent0, ChildId0, Key),
-            Sibling = get_node(Tx, Tree, SiblingId),
+            Sibling = get_node(Tx, Tree, Parent0#node.level - 1, SiblingId),
             NewNodes = case ?at_min(Tree, Sibling) of
                 true ->
                     Merged = merge(Tx, Tree, Child1, Sibling),
@@ -732,8 +732,8 @@ meta_key(Prefix, MetaKey) when is_binary(Prefix) ->
 
 %% node persistence functions
 
-get_node(Tx, #tree{} = Tree, Id) ->
-    Key = node_key(Tree#tree.prefix, Id),
+get_node(Tx, #tree{} = Tree, Level, Id) ->
+    Key = node_key(Tree#tree.prefix, Level, Id),
     Future = erlfdb:get(Tx, Key),
     Value = erlfdb:wait(Future),
     decode_node(Tree, Id, Key, Value).
@@ -746,7 +746,7 @@ clear_nodes(Tx, #tree{} = Tree, Nodes) ->
 
 
 clear_node(Tx, #tree{} = Tree, #node{} = Node) ->
-     Key = node_key(Tree#tree.prefix, Node#node.id),
+     Key = node_key(Tree#tree.prefix, Node#node.level, Node#node.id),
      erlfdb:clear(Tx, Key).
 
 
@@ -765,20 +765,21 @@ set_node(Tx, #tree{} = Tree, #node{} = _From, #node{} = To) ->
 
 set_node(Tx, #tree{} = Tree, #node{} = Node) ->
     validate_node(Tree, Node),
-    Key = node_key(Tree#tree.prefix, Node#node.id),
+    Level = if Node#node.id == ?NODE_ROOT_ID -> ?NODE_ROOT_ID; true -> Node#node.level end,
+    Key = node_key(Tree#tree.prefix, Level, Node#node.id),
     Value = encode_node(Tree, Key, Node),
     erlfdb:set(Tx, Key, Value).
 
 
-node_key(Prefix, Id) when is_binary(Prefix), is_integer(Id) ->
-    erlfdb_tuple:pack({?NODE, Id}, Prefix).
+node_key(Prefix, Level, Id) when is_binary(Prefix), is_integer(Level), is_integer(Id) ->
+    erlfdb_tuple:pack({?NODE, Level, Id}, Prefix).
 
 
 %% @doc Walks the whole tree and checks it for consistency.
 %% It also prints it to screen.
 validate_tree(Db, #tree{} = Tree) ->
     erlfdb:transactional(Db, fun(Tx) ->
-        Root = get_node(Db, Tree, ?NODE_ROOT_ID),
+        Root = get_node(Db, Tree, ?NODE_ROOT_ID, ?NODE_ROOT_ID),
         validate_tree(Tx, Tree, Root)
     end).
 
@@ -790,15 +791,16 @@ validate_tree(_Tx, #tree{} = Tree, #node{level = 0} = Node) ->
 validate_tree(Tx, #tree{} = Tree, #node{} = Node) ->
     print_node(Node),
     validate_node(Tree, Node),
-    validate_tree(Tx, Tree, Node#node.members);
+    validate_tree(Tx, Tree, Node#node.level, Node#node.members).
 
-validate_tree(_Tx, #tree{} = _Tree, []) ->
+
+validate_tree(_Tx, #tree{} = _Tree, _Level, []) ->
     ok;
 
-validate_tree(Tx, #tree{} = Tree, [{_F, _L, P, _R} | Rest]) ->
-    Node = get_node(Tx, Tree, P),
+validate_tree(Tx, #tree{} = Tree, Level, [{_F, _L, P, _R} | Rest]) ->
+    Node = get_node(Tx, Tree, Level - 1, P),
     validate_tree(Tx, Tree, Node),
-    validate_tree(Tx, Tree, Rest).
+    validate_tree(Tx, Tree, Level, Rest).
 
 
 validate_node(#tree{} = Tree, #node{} = Node) ->
