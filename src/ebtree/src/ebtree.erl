@@ -80,7 +80,7 @@ open(Db, Prefix, Order) ->
 -spec open(term(), binary(), pos_integer(), list()) -> #tree{}.
 open(Db, Prefix, Order, Options) when is_binary(Prefix), is_integer(Order), Order > 2, Order rem 2 == 0 ->
     ReduceFun = proplists:get_value(reduce_fun, Options, fun reduce_noop/2),
-    CollateFun = proplists:get_value(collate_fun, Options, fun collate_raw/2),
+    CollateFun = proplists:get_value(collate_fun, Options, fun erlang:'=<'/2),
     EncodeFun = proplists:get_value(encode_fun, Options, fun encode_erlang/3),
 
     Tree = #tree{
@@ -962,9 +962,6 @@ usort_members(#tree{} = Tree, List) ->
     lists:usort(CollateWrapper, List).
 
 
-collate_raw(K1, K2) ->
-    K1 =< K2.
-
 %% encoding function
 
 encode_erlang(encode, _Key, Value) ->
@@ -1066,7 +1063,7 @@ reduce_stats(Rs, true) ->
 
 
 collation_fun_test_() ->
-    Tree = #tree{collate_fun = fun collate_raw/2},
+    Tree = #tree{collate_fun = fun erlang:'=<'/2},
     [
         ?_test(?assert(greater_than(Tree, 4, 3))),
         ?_test(?assertNot(greater_than(Tree, 3, 4))),
