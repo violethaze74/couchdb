@@ -178,12 +178,15 @@ add_error(Error, Reason, Data) ->
 update(#{} = Db, Mrst0, State0) ->
     Limit = couch_views_batch:start(Mrst0),
     {Mrst1, State1} = try
-        do_update(Db, Mrst0, State0#{limit => Limit})
+        time_span(do_update, fun() ->
+            do_update(Db, Mrst0, State0#{limit => Limit})
+        end)
     catch
         error:{erlfdb_error, Error} when ?IS_RECOVERABLE_ERROR(Error) ->
             couch_views_batch:failure(Mrst0),
             update(Db, Mrst0, State0)
     end,
+    stat_dump(),
     case State1 of
         finished ->
             couch_eval:release_map_context(Mrst1#mrst.qserver);
@@ -205,7 +208,9 @@ do_update(Db, Mrst0, State0) ->
         State1 = get_update_start_state(TxDb, Mrst0, State0),
         Mrst1 = couch_views_fdb:set_trees(TxDb, Mrst0),
 
-        {ok, State2} = fold_changes(State1),
+        {ok, State2} = time_span(fold_changes, fun() ->
+            fold_changes(State1)
+        end),
 
         #{
             count := Count,
@@ -217,10 +222,19 @@ do_update(Db, Mrst0, State0) ->
             design_opts := DesignOpts
         } = State2,
 
-        DocAcc1 = fetch_docs(TxDb, DesignOpts, DocAcc),
+        stat_incr(changes_read, length(DocAcc)),
 
-        {Mrst2, MappedDocs} = map_docs(Mrst0, DocAcc1),
-        TotalKVs = write_docs(TxDb, Mrst1, MappedDocs, State2),
+        DocAcc1 = time_span(fetch_docs, fun() ->
+            fetch_docs(TxDb, DesignOpts, DocAcc)
+        end),
+
+        {Mrst2, MappedDocs} = time_span(map_docs, fun() ->
+            map_docs(Mrst1, DocAcc1)
+        end),
+
+        TotalKVs = time_span(write_docs, fun() ->
+            write_docs(TxDb, Mrst2, MappedDocs, State2)
+        end),
 
         ChangesDone = ChangesDone0 + length(DocAcc),
 
@@ -597,6 +611,51 @@ fail_job(Job, Data, Error, Reason) ->
     NewData = add_error(Error, Reason, Data),
     couch_jobs:finish(undefined, Job, NewData),
     exit(normal).
+
+
+time_span(Id, Fun) ->
+    Start = erlang:system_time(microsecond),
+    try
+        Fun()
+    after
+        Diff = erlang:system_time(microsecond) - Start,
+        stat_store(Id, Diff / 1000000)
+    end.
+
+
+stat_incr(Id, Count) ->
+    case get('$view_stats') of
+        #{Id := OldCount} ->
+            stat_store(Id, OldCount + Count);
+        _ ->
+            stat_store(Id, Count)
+    end.
+
+
+stat_store(Id, Value) ->
+    NewStats = case get('$view_stats') of
+        #{} = Stats ->
+            maps:put(Id, Value, Stats);
+        undefined ->
+            #{Id => Value}
+    end,
+    put('$view_stats', NewStats).
+
+
+stat_dump() ->
+    case get('$view_stats') of
+        #{} = Stats ->
+            KVs = lists:sort(maps:to_list(Stats)),
+            Strs = lists:foldl(fun({Id, Value}, Acc) ->
+                Str = io_lib:format("~s:~w", [Id, Value]),
+                [Str | Acc]
+            end, [], KVs),
+            Msg = "XKCD VIEW STATS: " ++ string:join(lists:reverse(Strs),  " "),
+            couch_log:error(Msg, []),
+            put('$view_stats', #{});
+        _ ->
+            ok
+    end.
 
 
 retry_limit() ->
