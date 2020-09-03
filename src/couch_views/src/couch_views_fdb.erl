@@ -221,15 +221,19 @@ update_views(TxDb, Mrst, Docs) ->
         tx := Tx
     } = TxDb,
 
-    % Collect update information
+    % Get initial KV size
+    OldKVSize = lists:foldl(fun(View, SizeAcc) ->
+        {_, Size, _} = ebtree:full_reduce(Tx, View#mrview.btree),
+        SizeAcc + Size
+    end, 0, Mrst#mrst.views),
 
+    % Collect update information
     #{
         ids := IdMap,
         views := ViewMaps,
         delete_ref := DeleteRef
     } = gather_update_info(Tx, Mrst, Docs),
 
-    % Generate a list of Keys to delete and Rows to insert from a map
     UpdateBTree = fun(BTree, Map) ->
         {ToRemove, ToInsert} = maps:fold(fun(Key, Value, {Keys, Rows}) ->
             case Value of
@@ -257,7 +261,15 @@ update_views(TxDb, Mrst, Docs) ->
 
         ViewMap = maps:get(ViewId, ViewMaps, #{}),
         UpdateBTree(BTree, ViewMap)
-    end, Mrst#mrst.views).
+    end, Mrst#mrst.views),
+
+    % Get new KV size after update
+    NewKVSize = lists:foldl(fun(View, SizeAcc) ->
+        {_, Size, _} = ebtree:full_reduce(Tx, View#mrview.btree),
+        SizeAcc + Size
+    end, 0, Mrst#mrst.views),
+
+    update_kv_size(TxDb, Mrst#mrst.sig, OldKVSize, NewKVSize).
 
 
 list_signatures(Db) ->
@@ -278,6 +290,11 @@ clear_index(Db, Signature) ->
         db_prefix := DbPrefix
     } = Db,
 
+    % Get view size to remove from global counter
+    SizeTuple = {?DB_VIEWS, ?VIEW_INFO, ?VIEW_KV_SIZE, Signature},
+    SizeKey = erlfdb_tuple:pack(SizeTuple, DbPrefix),
+    ViewSize = ?bin2uint(erlfdb:wait(erlfdb:get(Tx, SizeKey))),
+
     % Clear index info keys
     Keys = [
         {?DB_VIEWS, ?VIEW_INFO, ?VIEW_UPDATE_SEQ, Signature},
@@ -297,7 +314,12 @@ clear_index(Db, Signature) ->
     % Clear tree data
     TreeTuple = {?DB_VIEWS, ?VIEW_TREES, Signature},
     TreePrefix = erlfdb_tuple:pack(TreeTuple, DbPrefix),
-    erlfdb:clear_range_startswith(Tx, TreePrefix).
+    erlfdb:clear_range_startswith(Tx, TreePrefix),
+
+    % Decrement db wide view size counter
+    DbSizeTuple = {?DB_STATS, <<"sizes">>, <<"views">>},
+    DbSizeKey = erlfdb_tuple:pack(DbSizeTuple, DbPrefix),
+    erlfdb:add(Tx, DbSizeKey, -ViewSize).
 
 
 open_id_tree(TxDb, Sig) ->
@@ -514,6 +536,21 @@ gather_update_info(Tx, Mrst, Docs) ->
             end
         end
     end, InfoAcc1, Docs).
+
+
+update_kv_size(TxDb, Sig, OldSize, NewSize) ->
+    #{
+        tx := Tx,
+        db_prefix := DbPrefix
+    } = TxDb,
+
+    ViewTuple = {?DB_VIEWS, ?VIEW_INFO, ?VIEW_KV_SIZE, Sig},
+    ViewKey = erlfdb_tuple:pack(ViewTuple, DbPrefix),
+    erlfdb:set(Tx, ViewKey, ?uint2bin(NewSize)),
+
+    DbTuple = {?DB_STATS, <<"sizes">>, <<"views">>},
+    DbKey = erlfdb_tuple:pack(DbTuple, DbPrefix),
+    erlfdb:add(Tx, DbKey, NewSize - OldSize).
 
 
 dedupe_rows(View, KVs0) ->
