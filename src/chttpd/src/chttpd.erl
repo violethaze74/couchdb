@@ -877,9 +877,11 @@ end_delayed_json_response(#delayed_resp{buffer_response=true}=DelayedResp) ->
     #delayed_resp{
         req = Req,
         code = Code,
-        headers = Headers,
+        headers = BaseHeaders,
         chunks = Chunks
     } = DelayedResp,
+    couch_httpd:initialize_jsonp(Req),
+    Headers = couch_httpd:maybe_add_default_headers(Req, BaseHeaders),
     {ok, Resp} = start_response_length(Req, Code, Headers, iolist_size(Chunks)),
     send(Resp, lists:reverse(Chunks)).
 

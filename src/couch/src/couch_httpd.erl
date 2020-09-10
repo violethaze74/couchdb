@@ -39,6 +39,7 @@
 -export([check_max_request_length/1]).
 -export([handle_request/1]).
 -export([set_auth_handlers/0]).
+-export([initialize_jsonp/1, maybe_add_default_headers/2]).
 
 -define(HANDLER_NAME_IN_MODULE_POS, 6).
 -define(MAX_DRAIN_BYTES, 1048576).
