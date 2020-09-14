@@ -276,7 +276,7 @@ start_compact(State, Db) ->
     false ->
         DbPid = couch_db:get_pid(Db),
         Key = couch_db:name(Db),
-        case couch_db:get_compactor_pid(Db) of
+        case couch_db:get_compactor_pid_sync(Db) of
             nil ->
                 Ref = erlang:monitor(process, DbPid),
                 DbPid ! {'$gen_call', {self(), Ref}, start_compact},
