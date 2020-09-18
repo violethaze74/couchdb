@@ -130,6 +130,8 @@ var Loop = function() {
     } else if (e.error && e.reason) {
       // compatibility with old error format
       respond(["error", e.error, e.reason]);
+   }  else if (e.name && e.stack) {
+      respond(["error", e.name, e.stack]);
     } else if (e.name) {
       respond(["error", e.name, e]);
     } else {
