@@ -193,9 +193,16 @@ open_tree(TxDb, Sig, ViewId, ViewReduceFun) ->
 
     TreeOpts = [
         {reduce_fun, get_reducer(ViewReduceFun)},
+        {collate_fun, fun less_json_rows/2},
         {encode_fun, EncodeFun}
     ],
     ebtree:open(Tx, ReduceIdxPrefix, btree_order_size(), TreeOpts).
+
+
+less_json_rows({_, _} = A, {_, _} = B) ->
+    couch_ejson_compare:less_json_ids(A, B);
+less_json_rows(A, B) ->
+    couch_ejson_compare:less_json(A, B).
 
 
 delete_keys(Tx, Tree, DocId, Keys) ->
