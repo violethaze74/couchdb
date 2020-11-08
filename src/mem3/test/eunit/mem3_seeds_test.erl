@@ -18,8 +18,8 @@ a_test_() ->
     Tests = [
         {"empty seedlist should set status ok", fun empty_seedlist_status_ok/0},
         {"all seedlist nodes unreachable keeps status seeding", fun seedlist_misconfiguration/0},
-        {"seedlist entries should be present in _nodes", fun check_nodelist/0},
-        {"optional local _users db in mem3_sync:local_dbs()", fun check_local_dbs/0}
+        {"seedlist entries should be present in _nodes", fun check_nodelist/0}
+        %{"optional local _users db in mem3_sync:local_dbs()", fun check_local_dbs/0}
     ],
     {setup, fun setup/0, fun teardown/1, Tests}.
 
