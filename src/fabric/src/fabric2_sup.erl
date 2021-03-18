@@ -30,7 +30,7 @@ start_link(Args) ->
 
 init([]) ->
     config:enable_feature(fdb),
-    Flags = {rest_for_one, 1, 5},
+    Flags = {rest_for_one, 100, 5},
     Children = [
         {
             fabric2_server,

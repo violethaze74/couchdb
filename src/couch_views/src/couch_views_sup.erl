@@ -61,6 +61,6 @@ register_views_index() ->
 flags() ->
     #{
         strategy => one_for_one,
-        intensity => 1,
+        intensity => 1000,
         period => 5
     }.

@@ -33,7 +33,7 @@ start_link() ->
 init([]) ->
     Flags = #{
         strategy => rest_for_one,
-        intensity => 3,
+        intensity => 1000,
         period => 10
     },
     Children = [

@@ -51,7 +51,7 @@ get_child_pids() ->
 init(_) ->
     Flags = #{
         strategy => simple_one_for_one,
-        intensity => 10,
+        intensity => 1000,
         period => 3
     },
     Children = [
