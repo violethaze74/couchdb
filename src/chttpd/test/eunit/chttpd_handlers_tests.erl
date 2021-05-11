@@ -63,6 +63,15 @@ should_escape_dbname_on_replicate(Url) ->
         end).
 
 
+prevent_multiple_http_response_test() ->
+    ?assertEqual(undefined, couch_httpd:abort_if_response_already_started()),
+    ?assertEqual(true, couch_httpd:response_not_started()),
+    ?assertEqual(undefined, couch_httpd:abort_if_response_already_started()),
+    Err = multiple_responses_attempted,
+    ?assertThrow({http_abort, {mochiweb_response, _}, Err},
+        couch_httpd:abort_if_response_already_started()).
+
+
 json_value(JSON, Keys) ->
     couch_util:get_nested_json_value(JSON, Keys).
 
